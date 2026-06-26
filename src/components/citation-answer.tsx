@@ -165,7 +165,14 @@ export function CitationAnswer({
           const isLastSentence = sIdx === sentences.length - 1;
           const cited = followedByCitation && isLastSentence;
 
-          const contentElement = renderInlineMarkdown(sentenceText, `txt-${lineIdx}-${i}-${sIdx}`);
+          // Check for "not in files" markers (case-insensitive)
+          const notInFilesRegex = /\s*[\[\(](not in files|not in file|outside knowledge|ungrounded)[\]\)]\s*/i;
+          const isExplicitlyNotInFiles = notInFilesRegex.test(sentenceText);
+          const cleanSentenceText = sentenceText.replace(notInFilesRegex, "").trim();
+
+          if (!cleanSentenceText) return;
+
+          const contentElement = renderInlineMarkdown(cleanSentenceText, `txt-${lineIdx}-${i}-${sIdx}`);
 
           if (cited) {
             const isHovered = hoveredIndex === nextCitationIndex;
@@ -180,6 +187,16 @@ export function CitationAnswer({
                 onMouseEnter={() => setHoveredIndex(nextCitationIndex)}
                 onMouseLeave={() => setHoveredIndex(null)}
                 title={`Cited from Source [${nextCitationIndex}]`}
+              >
+                {contentElement}
+              </span>
+            );
+          } else if (isExplicitlyNotInFiles) {
+            elements.push(
+              <span
+                key={`span-not-in-files-${lineIdx}-${i}-${sIdx}`}
+                className="rounded px-0.5 border-b border-dashed border-rose-500/40 bg-rose-500/5 dark:bg-rose-500/10 text-rose-600 dark:text-rose-350 cursor-help transition-all duration-200 hover:bg-rose-500/15"
+                title="This statement is not found in the uploaded files (outside knowledge or general clinical knowledge)."
               >
                 {contentElement}
               </span>
@@ -303,12 +320,30 @@ export function CitationAnswer({
   // Flush any remaining list at the end
   flushList();
 
+  const hasNotInFilesMarker = /\s*[\[\(](not in files|not in file|outside knowledge|ungrounded)[\]\)]\s*/i.test(answer);
+
   return (
     <div className="space-y-4">
       {/* RENDERED TEXT AND CITATION BADGES */}
       <div className="text-sm text-foreground space-y-1">
         {renderedElements}
       </div>
+
+      {/* LEGEND / STATUS INDICATOR */}
+      {(uniqueFilesList.length > 0 || hasNotInFilesMarker) && (
+        <div className="flex flex-wrap gap-4 items-center text-[10px] uppercase font-bold tracking-wider text-slate-500 pt-3 border-t border-border-theme mt-4">
+          <span className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-accent-teal" />
+            Grounded in Files (Cited)
+          </span>
+          {hasNotInFilesMarker && (
+            <span className="flex items-center gap-1.5 text-rose-500">
+              <span className="h-2 w-2 rounded-full bg-rose-500" />
+              Not in Files (Outside Knowledge)
+            </span>
+          )}
+        </div>
+      )}
 
       {/* CITATIONS LIST */}
       {uniqueFilesList.length > 0 && (
