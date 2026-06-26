@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import type { KnowledgeBase, KnowledgeFile } from "@prisma/client";
 import { apiRequest } from "@/lib/client-api";
+import { CitationAnswer } from "./citation-answer";
 
 type KnowledgeBaseWithFiles = KnowledgeBase & {
   files: KnowledgeFile[];
@@ -21,6 +22,7 @@ type SearchResult = {
 type ChatResult = {
   answer: string;
   citations: Array<{ fileId: string; filename: string; index: number }>;
+  annotations?: Array<{ text: string; fileId: string; filename: string; index: number }>;
   warning: string | null;
 };
 
@@ -37,7 +39,15 @@ interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   citations?: Array<{ fileId: string; filename: string; index: number }>;
+  annotations?: Array<{ text: string; fileId: string; filename: string; index: number }>;
   warning?: string | null;
+  createdAt: Date;
+}
+
+interface ChatSession {
+  id: string;
+  name: string;
+  messages: ChatMessage[];
   createdAt: Date;
 }
 
@@ -46,6 +56,21 @@ function formatDate(input: Date | string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(input));
+}
+
+function formatShortTime(dateInput: Date | string) {
+  const date = new Date(dateInput);
+  const diffMs = Date.now() - date.getTime();
+  const diffMins = Math.round(diffMs / (1000 * 60));
+  const diffHours = Math.round(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffMins < 1) return "now";
+  if (diffMins < 60) return `${diffMins}m`;
+  if (diffHours < 24) return `${diffHours}h`;
+  if (diffDays < 30) return `${diffDays}d`;
+  const diffMonths = Math.round(diffDays / 30);
+  return `${diffMonths}mo`;
 }
 
 function formatBytes(bytes: number | null) {
@@ -89,6 +114,8 @@ export function WorkspaceLayout({
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const chatBottomRef = useRef<HTMLDivElement>(null);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string>("");
 
   // Right sidebar states
   const [rightTab, setRightTab] = useState<"documents" | "retrieval">("documents");
@@ -161,20 +188,57 @@ export function WorkspaceLayout({
     return () => clearInterval(interval);
   }, [activeKb, activeFiles]);
 
-  // Initialize/Reset chat messages when active KB changes
+  // Load sessions from localStorage when activeKb changes
   useEffect(() => {
-    if (activeKb) {
-      setMessages([
-        {
-          id: "welcome",
-          role: "system",
-          content: `Connected to "${activeKb.name}". Ask me questions grounded in this knowledge base.`,
-          createdAt: new Date(),
-        },
-      ]);
-    } else {
+    if (!activeKb) {
+      setSessions([]);
+      setActiveSessionId("");
       setMessages([]);
+      return;
     }
+
+    const storageKey = `kb_sessions_${activeKb.id}`;
+    let loadedSessions: ChatSession[] = [];
+
+    try {
+      const stored = window.localStorage.getItem(storageKey);
+      if (stored) {
+        loadedSessions = JSON.parse(stored);
+        // Convert ISO string dates back to Date objects
+        loadedSessions.forEach(s => {
+          s.createdAt = new Date(s.createdAt);
+          s.messages.forEach(m => {
+            m.createdAt = new Date(m.createdAt);
+          });
+        });
+      }
+    } catch (e) {
+      console.error("Failed to parse stored sessions:", e);
+    }
+
+    if (loadedSessions.length === 0) {
+      // Create a default first session
+      const defaultSession: ChatSession = {
+        id: Math.random().toString(36).substr(2, 9),
+        name: "Session 1",
+        messages: [
+          {
+            id: "welcome",
+            role: "system",
+            content: `Connected to "${activeKb.name}". Ask me questions grounded in this knowledge base.`,
+            createdAt: new Date(),
+          },
+        ],
+        createdAt: new Date(),
+      };
+      loadedSessions = [defaultSession];
+      window.localStorage.setItem(storageKey, JSON.stringify(loadedSessions));
+    }
+
+    setSessions(loadedSessions);
+    setActiveSessionId(loadedSessions[0].id);
+    setMessages(loadedSessions[0].messages);
+
     // Clear other states
     setRetrievalResults([]);
     setRetrievalQuery("");
@@ -184,7 +248,62 @@ export function WorkspaceLayout({
     setDriveUrl("");
     setError(null);
     setMessage(null);
-  }, [activeKb]);
+  }, [activeKb?.id]);
+
+  // Sync current messages to sessions array and localStorage
+  useEffect(() => {
+    if (!activeKb || !activeSessionId || sessions.length === 0) return;
+
+    const activeSession = sessions.find(s => s.id === activeSessionId);
+    if (!activeSession) return;
+
+    // Check if the messages are different to prevent an infinite update loop
+    if (JSON.stringify(activeSession.messages) === JSON.stringify(messages)) return;
+
+    const updatedSessions = sessions.map(s => {
+      if (s.id === activeSessionId) {
+        return { ...s, messages };
+      }
+      return s;
+    });
+
+    setSessions(updatedSessions);
+    window.localStorage.setItem(`kb_sessions_${activeKb.id}`, JSON.stringify(updatedSessions));
+  }, [messages, activeSessionId, activeKb?.id]);
+
+  // Helper to create a new chat session
+  function handleCreateSession() {
+    if (!activeKb) return;
+
+    const newSession: ChatSession = {
+      id: Math.random().toString(36).substr(2, 9),
+      name: `Session ${sessions.length + 1}`,
+      messages: [
+        {
+          id: "welcome",
+          role: "system",
+          content: `Connected to "${activeKb.name}". Ask me questions grounded in this knowledge base.`,
+          createdAt: new Date(),
+        },
+      ],
+      createdAt: new Date(),
+    };
+
+    const updatedSessions = [...sessions, newSession];
+    setSessions(updatedSessions);
+    setActiveSessionId(newSession.id);
+    setMessages(newSession.messages);
+    window.localStorage.setItem(`kb_sessions_${activeKb.id}`, JSON.stringify(updatedSessions));
+  }
+
+  // Helper to switch chat sessions
+  function handleSwitchSession(sessionId: string) {
+    const targetSession = sessions.find(s => s.id === sessionId);
+    if (!targetSession) return;
+
+    setActiveSessionId(sessionId);
+    setMessages(targetSession.messages);
+  }
 
   // Scroll to bottom of chat
   useEffect(() => {
@@ -260,6 +379,22 @@ export function WorkspaceLayout({
       content: userQuestion,
       createdAt: new Date(),
     };
+
+    // Auto-rename session on first question
+    const isFirstUserMessage = messages.filter((m) => m.role === "user").length === 0;
+    if (isFirstUserMessage && sessions.length > 0) {
+      const truncatedName =
+        userQuestion.length > 28 ? userQuestion.slice(0, 26) + "..." : userQuestion;
+      const updatedSessions = sessions.map((s) => {
+        if (s.id === activeSessionId) {
+          return { ...s, name: truncatedName };
+        }
+        return s;
+      });
+      setSessions(updatedSessions);
+      window.localStorage.setItem(`kb_sessions_${activeKb.id}`, JSON.stringify(updatedSessions));
+    }
+
     setMessages((prev) => [...prev, userMsg]);
     setChatLoading(true);
 
@@ -278,6 +413,7 @@ export function WorkspaceLayout({
         role: "assistant",
         content: result.answer,
         citations: result.citations,
+        annotations: result.annotations,
         warning: result.warning,
         createdAt: new Date(),
       };
@@ -559,28 +695,81 @@ export function WorkspaceLayout({
             {filteredKbs.map((kb) => {
               const isActive = activeKb?.id === kb.id;
               return (
-                <Link
-                  key={kb.id}
-                  href={`/kb/${kb.id}`}
-                  className={`flex flex-col gap-1 rounded-xl px-4 py-3 text-left transition ${
-                    isActive
-                      ? "bg-card-bg text-foreground shadow-sm border-l-2 border-accent-teal"
-                      : "text-slate-400 hover:bg-card-bg/60 hover:text-foreground"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium truncate">{kb.name}</span>
-                    <span className="text-[9px] rounded px-1.5 py-0.5 bg-background dark:bg-slate-950/60 font-semibold tracking-wide uppercase">
-                      {kb.sourceMode.toLowerCase()}
-                    </span>
+                <div key={kb.id} className="flex flex-col mb-1">
+                  <div
+                    onClick={() => {
+                      if (!isActive) {
+                        router.push(`/kb/${kb.id}`);
+                      }
+                    }}
+                    className={`flex flex-col gap-1 rounded-xl px-4 py-3 text-left transition cursor-pointer ${
+                      isActive
+                        ? "bg-card-bg text-foreground shadow-sm border-l-2 border-accent-teal"
+                        : "text-slate-400 hover:bg-card-bg/60 hover:text-foreground"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold truncate">{kb.name}</span>
+                      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        {isActive && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleCreateSession();
+                            }}
+                            title="New Chat Session"
+                            className="text-[9px] font-bold text-accent-teal hover:text-accent-teal/85 bg-accent-teal/10 hover:bg-accent-teal/15 px-2 py-0.5 rounded cursor-pointer transition flex items-center gap-0.5"
+                          >
+                            <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
+                            </svg>
+                            New
+                          </button>
+                        )}
+                        {!isActive && (
+                          <span className="text-[9px] rounded px-1.5 py-0.5 bg-background dark:bg-slate-950/60 font-semibold tracking-wide uppercase">
+                            {kb.sourceMode.toLowerCase()}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-slate-500">
+                      <span className="truncate max-w-[150px] font-mono text-[9px]">
+                        {kb.vectorStoreId}
+                      </span>
+                      <span>{kb.files.length} files</span>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between text-[10px] text-slate-500">
-                    <span className="truncate max-w-[120px] font-mono text-[9px]">
-                      {kb.vectorStoreId}
-                    </span>
-                    <span>{kb.files.length} files</span>
-                  </div>
-                </Link>
+
+                  {isActive && sessions.length > 0 && (
+                    <div
+                      className="mt-1 ml-4 pl-3.5 border-l border-border-theme/40 space-y-0.5 my-1"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {sessions.map((s) => {
+                        const isSessionActive = activeSessionId === s.id;
+                        return (
+                          <div
+                            key={s.id}
+                            onClick={() => handleSwitchSession(s.id)}
+                            className={`group flex items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition cursor-pointer select-none ${
+                              isSessionActive
+                                ? "text-accent-teal font-medium bg-accent-teal/5"
+                                : "text-slate-400 hover:text-foreground hover:bg-card-bg/30"
+                            }`}
+                          >
+                            <span className="truncate max-w-[160px]">{s.name}</span>
+                            <span className="text-[9px] text-slate-500 group-hover:text-slate-400 transition ml-2 flex-shrink-0">
+                              {formatShortTime(s.createdAt)}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               );
             })}
 
@@ -648,7 +837,33 @@ export function WorkspaceLayout({
                     </div>
                   ) : (
                     <div className="max-w-[85%] rounded-2xl border border-border-theme bg-card-bg px-4 py-3.5 text-sm text-foreground shadow-sm leading-relaxed space-y-3">
-                      <p className="whitespace-pre-wrap">{msg.content}</p>
+                      <CitationAnswer
+                        answer={msg.content}
+                        citations={msg.citations}
+                        annotations={msg.annotations}
+                      />
+
+                      {msg.role === "assistant" && (!msg.citations || msg.citations.length === 0) && (
+                        <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-2.5 text-xs text-amber-600 dark:text-amber-350 flex gap-2 items-start mt-2">
+                          <svg className="h-4.5 w-4.5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                          </svg>
+                          <div>
+                            <span className="font-semibold">Ungrounded Answer:</span> No files were retrieved or searched from the knowledge base for this question.
+                          </div>
+                        </div>
+                      )}
+
+                      {msg.role === "assistant" && (msg.citations && msg.citations.length > 0) && (!msg.annotations || msg.annotations.length === 0) && (
+                        <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-2.5 text-xs text-amber-600 dark:text-amber-350 flex gap-2 items-start mt-2">
+                          <svg className="h-4.5 w-4.5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                          </svg>
+                          <div>
+                            <span className="font-semibold">Ungrounded Answer:</span> Although files were retrieved, no grounding citations were used in this response.
+                          </div>
+                        </div>
+                      )}
 
                       {msg.warning && (
                         <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-2 text-xs text-amber-600 dark:text-amber-300 flex gap-2 items-start mt-2">
@@ -656,28 +871,6 @@ export function WorkspaceLayout({
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                           </svg>
                           <span>{msg.warning}</span>
-                        </div>
-                      )}
-
-                      {msg.citations && msg.citations.length > 0 && (
-                        <div className="pt-2 border-t border-border-theme">
-                          <div className="text-[10px] uppercase font-bold tracking-wider text-slate-500 mb-1.5">
-                            Citations
-                          </div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {msg.citations.map((c, i) => (
-                              <span
-                                key={`${c.fileId}-${i}`}
-                                className="inline-flex items-center gap-1 rounded bg-input-theme px-2 py-0.5 font-mono text-[10px] text-slate-400 border border-border-theme"
-                                title={`OpenAI File: ${c.fileId}`}
-                              >
-                                <svg className="h-3 w-3 text-slate-550" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                                </svg>
-                                {c.filename}
-                              </span>
-                            ))}
-                          </div>
                         </div>
                       )}
                     </div>
