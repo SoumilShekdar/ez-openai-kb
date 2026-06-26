@@ -52,6 +52,32 @@ function extractCitations(response: any) {
   return [...unique.values()];
 }
 
+function extractAnnotations(response: any) {
+  const annotations: Array<{ text: string; fileId: string; filename: string; index: number }> = [];
+  const message = response.output?.find((item: any) => item.type === "message");
+
+  for (const part of message?.content ?? []) {
+    if (part.type !== "output_text") {
+      continue;
+    }
+
+    for (const annotation of part.annotations ?? []) {
+      if (annotation.type !== "file_citation") {
+        continue;
+      }
+
+      annotations.push({
+        text: annotation.text ?? `【${annotation.index ?? 0}†source】`,
+        fileId: annotation.file_id ?? "unknown",
+        filename: annotation.filename ?? annotation.file_id ?? "Unknown file",
+        index: annotation.index ?? 0,
+      });
+    }
+  }
+
+  return annotations;
+}
+
 export async function POST(
   request: NextRequest,
   context: { params: Promise<{ id: string }> },
@@ -118,6 +144,7 @@ export async function POST(
 
     const answer = extractMessageText(response);
     const citations = extractCitations(response);
+    const annotations = extractAnnotations(response);
     const warning =
       !answer.trim() || citations.length === 0
         ? "No files found or no relevant grounded results were retrieved for this question."
@@ -126,6 +153,7 @@ export async function POST(
     return jsonWithSession(sessionState, {
       answer,
       citations,
+      annotations,
       warning,
     });
   } catch (error) {

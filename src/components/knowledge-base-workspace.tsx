@@ -6,6 +6,7 @@ import { useMemo, useState, useTransition } from "react";
 import type { KnowledgeBase, KnowledgeFile } from "@prisma/client";
 import { apiRequest } from "@/lib/client-api";
 import { SettingsPanel } from "@/components/settings-panel";
+import { CitationAnswer } from "./citation-answer";
 
 type SearchResult = {
   fileId: string;
@@ -18,6 +19,7 @@ type SearchResult = {
 type ChatResult = {
   answer: string;
   citations: Array<{ fileId: string; filename: string; index: number }>;
+  annotations?: Array<{ text: string; fileId: string; filename: string; index: number }>;
   warning: string | null;
 };
 
@@ -513,38 +515,44 @@ export function KnowledgeBaseWorkspace({
             </div>
 
             {chatResult?.warning && (
-              <div className="mt-5 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <div className="mt-5 rounded-2xl border border-amber-350 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-900/40 px-4 py-3 text-sm text-amber-900 dark:text-amber-300">
                 {chatResult.warning}
               </div>
             )}
 
             {chatResult && (
-              <div className="mt-6 rounded-[1.75rem] bg-white/8 p-5">
+              <div className="mt-6 rounded-[1.75rem] bg-white/8 p-5 space-y-4">
                 <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-teal-200">
                   Answer
                 </h3>
-                <p className="mt-4 whitespace-pre-wrap text-base leading-8 text-white">
-                  {chatResult.answer || "No grounded answer was returned."}
-                </p>
+                
+                <CitationAnswer
+                  answer={chatResult.answer}
+                  citations={chatResult.citations}
+                  annotations={chatResult.annotations}
+                />
 
-                <div className="mt-5">
-                  <h4 className="text-sm font-semibold text-teal-100">Citations</h4>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {chatResult.citations.map((citation) => (
-                      <span
-                        key={`${citation.fileId}-${citation.filename}`}
-                        className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-slate-200"
-                      >
-                        {citation.filename}
-                      </span>
-                    ))}
-                    {chatResult.citations.length === 0 && (
-                      <span className="text-sm text-slate-300">
-                        No file citations were returned.
-                      </span>
-                    )}
+                {(!chatResult.citations || chatResult.citations.length === 0) && (
+                  <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-350 flex gap-2 items-start mt-4">
+                    <svg className="h-4.5 w-4.5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    <div>
+                      <span className="font-semibold">Ungrounded Answer:</span> No files were retrieved or searched from the knowledge base for this question.
+                    </div>
                   </div>
-                </div>
+                )}
+
+                {(chatResult.citations && chatResult.citations.length > 0) && (!chatResult.annotations || chatResult.annotations.length === 0) && (
+                  <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-350 flex gap-2 items-start mt-4">
+                    <svg className="h-4.5 w-4.5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    <div>
+                      <span className="font-semibold">Ungrounded Answer:</span> Although files were retrieved, no grounding citations were used in this response.
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
