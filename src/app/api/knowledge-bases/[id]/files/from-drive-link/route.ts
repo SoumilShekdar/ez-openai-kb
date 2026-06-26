@@ -1,0 +1,91 @@
+import { ImportSource, KeyMode, UsageEventType } from "@prisma/client";
+import { z } from "zod";
+import type { NextRequest } from "next/server";
+import { ApiError, errorResponse, jsonWithSession } from "@/lib/api";
+import { resolveGoogleDriveDownload } from "@/lib/drive";
+import { buildVectorFileAttributes, recordUsageEvent, requireKnowledgeBase, saveKnowledgeFile } from "@/lib/knowledge-base";
+import { getOpenAIForRequest } from "@/lib/openai-server";
+import { prisma } from "@/lib/prisma";
+import { enforceFallbackRateLimit } from "@/lib/rate-limit";
+import { downloadRemoteFile } from "@/lib/remote-file";
+import { getSessionState } from "@/lib/session";
+
+const schema = z.object({
+  url: z.string().url(),
+});
+
+export async function POST(
+  request: NextRequest,
+  context: { params: Promise<{ id: string }> },
+) {
+  const sessionState = getSessionState(request);
+
+  try {
+    const { id } = await context.params;
+    const knowledgeBase = await requireKnowledgeBase(id);
+    const { client, keyMode } = getOpenAIForRequest(request);
+
+    if (keyMode === "fallback") {
+      await enforceFallbackRateLimit({
+        prisma,
+        sessionId: sessionState.sessionId,
+        eventType: UsageEventType.FILE_ADD,
+      });
+    }
+
+    const payload = schema.parse(await request.json());
+    const resolved = resolveGoogleDriveDownload(payload.url);
+    const file = await downloadRemoteFile(resolved.downloadUrl, resolved.filename);
+
+    if (!file) {
+      throw new ApiError(400, "Unable to download the Google Drive file.");
+    }
+
+    const uploaded = await client.files.create({
+      file,
+      purpose: "assistants",
+    });
+
+    const attributes = buildVectorFileAttributes({
+      source: ImportSource.DRIVE,
+      sourceUrl: payload.url,
+    });
+
+    const vectorFile = await client.vectorStores.files.createAndPoll(
+      knowledgeBase.vectorStoreId,
+      {
+        file_id: uploaded.id,
+        attributes,
+      },
+    );
+
+    const knowledgeFile = await saveKnowledgeFile({
+      knowledgeBaseId: knowledgeBase.id,
+      openaiFileId: uploaded.id,
+      vectorStoreFileId: vectorFile.id,
+      originalName: file.name,
+      importSource: ImportSource.DRIVE,
+      sourceUrl: payload.url,
+      status:
+        vectorFile.status === "completed"
+          ? "COMPLETED"
+          : vectorFile.status === "failed"
+            ? "FAILED"
+            : "IN_PROGRESS",
+      bytes: file.size,
+      mimeType: file.type,
+      attributes,
+    });
+
+    await recordUsageEvent({
+      sessionId: sessionState.sessionId,
+      eventType: UsageEventType.FILE_ADD,
+      keyMode: keyMode === "user" ? KeyMode.USER : KeyMode.FALLBACK,
+      knowledgeBaseId: knowledgeBase.id,
+    });
+
+    return jsonWithSession(sessionState, { knowledgeFile });
+  } catch (error) {
+    return errorResponse(sessionState, error);
+  }
+}

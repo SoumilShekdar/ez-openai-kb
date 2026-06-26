@@ -1,0 +1,82 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "__DATABASE_PROVIDER__"
+  url      = env("DATABASE_URL")
+}
+
+model KnowledgeBase {
+  id            String          @id @default(cuid())
+  name          String
+  description   String?
+  vectorStoreId String          @unique
+  sourceMode    SourceMode
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  files         KnowledgeFile[]
+  usageEvents   UsageEvent[]
+}
+
+model KnowledgeFile {
+  id                String        @id @default(cuid())
+  knowledgeBase     KnowledgeBase @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
+  knowledgeBaseId   String
+  openaiFileId      String        @unique
+  vectorStoreFileId String?
+  originalName      String
+  importSource      ImportSource
+  sourceUrl         String?
+  status            FileStatus
+  bytes             Int?
+  mimeType          String?
+  attributesJson    String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([knowledgeBaseId, createdAt])
+}
+
+model UsageEvent {
+  id              String          @id @default(cuid())
+  sessionId       String
+  eventType       UsageEventType
+  keyMode         KeyMode
+  knowledgeBase   KnowledgeBase?  @relation(fields: [knowledgeBaseId], references: [id], onDelete: SetNull)
+  knowledgeBaseId String?
+  createdAt       DateTime        @default(now())
+
+  @@index([sessionId, createdAt])
+  @@index([eventType, createdAt])
+}
+
+enum SourceMode {
+  CREATED
+  ATTACHED
+}
+
+enum ImportSource {
+  LOCAL
+  DRIVE
+  WEB
+  EXTERNAL
+}
+
+enum FileStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+enum UsageEventType {
+  SEARCH
+  CHAT
+  FILE_ADD
+}
+
+enum KeyMode {
+  USER
+  FALLBACK
+}
