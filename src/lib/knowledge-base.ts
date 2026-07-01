@@ -120,6 +120,36 @@ export function buildVectorFileAttributes({
   };
 }
 
+export function normalizeSourceUrl(url: string) {
+  try {
+    const parsed = new URL(url.trim());
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return url.trim().replace(/\/$/, "");
+  }
+}
+
+export async function findExistingKnowledgeFileBySourceUrl(
+  knowledgeBaseId: string,
+  sourceUrl: string,
+) {
+  const normalized = normalizeSourceUrl(sourceUrl);
+  const files = await prisma.knowledgeFile.findMany({
+    where: {
+      knowledgeBaseId,
+      sourceUrl: {
+        not: null,
+      },
+    },
+  });
+
+  return (
+    files.find((file) => file.sourceUrl && normalizeSourceUrl(file.sourceUrl) === normalized) ??
+    null
+  );
+}
+
 export async function saveKnowledgeFile({
   knowledgeBaseId,
   openaiFileId,
