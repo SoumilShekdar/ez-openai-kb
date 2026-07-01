@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { KnowledgeBase, KnowledgeFile } from "@prisma/client";
 import { apiRequest } from "@/lib/client-api";
 import { CitationAnswer } from "./citation-answer";
+import { KbApiExportPanel } from "./kb-api-export-panel";
 
 type KnowledgeBaseWithFiles = KnowledgeBase & {
   files: KnowledgeFile[];
@@ -168,7 +169,8 @@ export function WorkspaceLayout({
   const [activeSessionId, setActiveSessionId] = useState<string>("");
 
   // Right sidebar states
-  const [rightTab, setRightTab] = useState<"documents" | "retrieval">("documents");
+  const [rightTab, setRightTab] = useState<"documents" | "retrieval" | "api">("documents");
+  const [appOrigin, setAppOrigin] = useState("");
   const [addDocExpanded, setAddDocExpanded] = useState(false);
   const [addDocMethod, setAddDocMethod] = useState<"upload" | "drive" | "web">("upload");
   const [driveUrl, setDriveUrl] = useState("");
@@ -231,6 +233,8 @@ export function WorkspaceLayout({
     // API Key setup
     const existing = window.sessionStorage.getItem("openai_user_key") || "";
     setApiKey(existing);
+
+    setAppOrigin(window.location.origin);
   }, []);
 
   // Update active files when props change
@@ -1214,6 +1218,13 @@ export function WorkspaceLayout({
                 </span>
                 <button
                   type="button"
+                  onClick={() => setRightTab("api")}
+                  className="rounded-full px-3 py-1 text-[10px] text-slate-400 border border-border-theme bg-card-bg hover:text-foreground transition whitespace-nowrap"
+                >
+                  Use API
+                </button>
+                <button
+                  type="button"
                   onClick={() => {
                     void navigator.clipboard.writeText(activeKb.id);
                     setMessage("Knowledge base ID copied.");
@@ -1398,6 +1409,16 @@ export function WorkspaceLayout({
                   }`}
                 >
                   Direct Search
+                </button>
+                <button
+                  onClick={() => setRightTab("api")}
+                  className={`min-w-0 flex-1 pb-3 text-center text-[11px] font-medium transition whitespace-nowrap sm:text-xs ${
+                    rightTab === "api"
+                      ? "border-b-2 border-accent-teal text-accent-teal"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  API
                 </button>
               </div>
             </div>
@@ -1886,6 +1907,12 @@ export function WorkspaceLayout({
                     )}
                   </div>
                 </>
+              ) : rightTab === "api" ? (
+                <KbApiExportPanel
+                  kbId={activeKb.id}
+                  baseUrl={appOrigin}
+                  onCopied={setMessage}
+                />
               ) : (
                 /* Retrieval Search Panel */
                 <div className="space-y-4">
