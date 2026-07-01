@@ -9,6 +9,7 @@
     "prisma:generate": "npm run prisma:sync && prisma generate",
     "db:init": "node scripts/init-sqlite.mjs",
     "db:push": "npm run prisma:sync && prisma db push",
+    "seed:public-kbs": "node scripts/seed-public-knowledge-bases.mjs",
     "prebuild": "npm run prisma:generate",
     "build": "next build --webpack",
     "start": "next start"

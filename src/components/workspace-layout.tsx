@@ -80,6 +80,16 @@ function formatBytes(bytes: number | null) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function normalizeSourceUrl(url: string) {
+  try {
+    const parsed = new URL(url.trim());
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return url.trim().replace(/\/$/, "");
+  }
+}
+
 export function WorkspaceLayout({
   knowledgeBases,
   activeKb,
@@ -126,6 +136,17 @@ export function WorkspaceLayout({
   const [webPreset, setWebPreset] = useState("all");
   const [webCandidates, setWebCandidates] = useState<Candidate[]>([]);
   const [webSearching, setWebSearching] = useState(false);
+  const [directUrl, setDirectUrl] = useState("");
+  const [selectedCandidateUrls, setSelectedCandidateUrls] = useState<string[]>([]);
+  const [candidateAddState, setCandidateAddState] = useState<
+    Record<string, "idle" | "adding" | "added" | "duplicate">
+  >({});
+  const [bulkAdding, setBulkAdding] = useState(false);
+
+  // Indexed document filters
+  const [fileFilterQuery, setFileFilterQuery] = useState("");
+  const [fileFilterSource, setFileFilterSource] = useState("all");
+  const [fileFilterStatus, setFileFilterStatus] = useState("all");
 
   // Direct retrieval search states
   const [retrievalQuery, setRetrievalQuery] = useState("");
@@ -245,7 +266,13 @@ export function WorkspaceLayout({
     setRetrievalWarning(null);
     setWebCandidates([]);
     setWebQuery("");
+    setDirectUrl("");
+    setSelectedCandidateUrls([]);
+    setCandidateAddState({});
     setDriveUrl("");
+    setFileFilterQuery("");
+    setFileFilterSource("all");
+    setFileFilterStatus("all");
     setError(null);
     setMessage(null);
   }, [activeKb?.id]);
@@ -326,6 +353,36 @@ export function WorkspaceLayout({
     return activeFiles.filter((f) => f.status === "COMPLETED").length;
   }, [activeFiles]);
 
+  const indexedSourceUrls = useMemo(() => {
+    return new Set(
+      activeFiles
+        .map((file) => file.sourceUrl)
+        .filter((url): url is string => Boolean(url))
+        .map((url) => normalizeSourceUrl(url)),
+    );
+  }, [activeFiles]);
+
+  const filteredFiles = useMemo(() => {
+    const query = fileFilterQuery.trim().toLowerCase();
+
+    return activeFiles.filter((file) => {
+      const matchesQuery =
+        !query ||
+        file.originalName.toLowerCase().includes(query) ||
+        (file.sourceUrl && file.sourceUrl.toLowerCase().includes(query));
+
+      const matchesSource =
+        fileFilterSource === "all" ||
+        file.importSource.toLowerCase() === fileFilterSource.toLowerCase();
+
+      const matchesStatus =
+        fileFilterStatus === "all" ||
+        file.status.toLowerCase() === fileFilterStatus.toLowerCase();
+
+      return matchesQuery && matchesSource && matchesStatus;
+    });
+  }, [activeFiles, fileFilterQuery, fileFilterSource, fileFilterStatus]);
+
   function runAction(action: () => Promise<void>) {
     setError(null);
     setMessage(null);
@@ -340,6 +397,103 @@ export function WorkspaceLayout({
         );
       }
     });
+  }
+
+  async function addWebSourceUrl(url: string) {
+    if (!activeKb) return;
+
+    const normalized = normalizeSourceUrl(url);
+    if (indexedSourceUrls.has(normalized)) {
+      setCandidateAddState((prev) => ({ ...prev, [url]: "duplicate" }));
+      setMessage("This source URL is already indexed in this knowledge base.");
+      return;
+    }
+
+    setCandidateAddState((prev) => ({ ...prev, [url]: "adding" }));
+
+    try {
+      const result = await apiRequest<{ knowledgeFile: KnowledgeFile; duplicate?: boolean }>(
+        `/api/knowledge-bases/${activeKb.id}/files/from-web-url`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ url }),
+        },
+      );
+
+      if (result.duplicate) {
+        setCandidateAddState((prev) => ({ ...prev, [url]: "duplicate" }));
+        setMessage("This source URL is already indexed in this knowledge base.");
+      } else {
+        setCandidateAddState((prev) => ({ ...prev, [url]: "added" }));
+        setActiveFiles((prev) => [result.knowledgeFile, ...prev]);
+        setMessage("Web file added successfully.");
+      }
+      router.refresh();
+    } catch (caughtError) {
+      setCandidateAddState((prev) => ({ ...prev, [url]: "idle" }));
+      throw caughtError;
+    }
+  }
+
+  function toggleCandidateSelection(url: string) {
+    setSelectedCandidateUrls((prev) =>
+      prev.includes(url) ? prev.filter((item) => item !== url) : [...prev, url],
+    );
+  }
+
+  async function addSelectedCandidates() {
+    if (!activeKb || selectedCandidateUrls.length === 0) return;
+
+    setBulkAdding(true);
+    setError(null);
+
+    let addedCount = 0;
+    let duplicateCount = 0;
+
+    try {
+      for (const url of selectedCandidateUrls) {
+        const normalized = normalizeSourceUrl(url);
+        if (indexedSourceUrls.has(normalized)) {
+          setCandidateAddState((prev) => ({ ...prev, [url]: "duplicate" }));
+          duplicateCount += 1;
+          continue;
+        }
+
+        setCandidateAddState((prev) => ({ ...prev, [url]: "adding" }));
+
+        try {
+          const result = await apiRequest<{ knowledgeFile: KnowledgeFile; duplicate?: boolean }>(
+            `/api/knowledge-bases/${activeKb.id}/files/from-web-url`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ url }),
+            },
+          );
+
+          if (result.duplicate) {
+            setCandidateAddState((prev) => ({ ...prev, [url]: "duplicate" }));
+            duplicateCount += 1;
+          } else {
+            setCandidateAddState((prev) => ({ ...prev, [url]: "added" }));
+            setActiveFiles((prev) => [result.knowledgeFile, ...prev]);
+            addedCount += 1;
+          }
+        } catch {
+          setCandidateAddState((prev) => ({ ...prev, [url]: "idle" }));
+        }
+      }
+
+      setSelectedCandidateUrls([]);
+      setMessage(
+        `Added ${addedCount} source${addedCount === 1 ? "" : "s"}` +
+          (duplicateCount > 0 ? `, ${duplicateCount} already indexed.` : "."),
+      );
+      router.refresh();
+    } finally {
+      setBulkAdding(false);
+    }
   }
 
   function handleSaveKey() {
@@ -812,6 +966,9 @@ export function WorkspaceLayout({
               </div>
               <div className="flex items-center gap-3">
                 <span className="rounded-full px-3 py-1 font-mono text-[10px] text-slate-400 border border-border-theme bg-card-bg">
+                  KB ID: {activeKb.id}
+                </span>
+                <span className="rounded-full px-3 py-1 font-mono text-[10px] text-slate-400 border border-border-theme bg-card-bg">
                   VS ID: {activeKb.vectorStoreId}
                 </span>
                 <span className="rounded-full bg-accent-teal/15 border border-accent-teal/20 px-3 py-1 text-xs text-accent-teal font-medium">
@@ -1038,7 +1195,7 @@ export function WorkspaceLayout({
                               addDocMethod === "web" ? "border-b border-accent-teal text-accent-teal" : "text-slate-400"
                             }`}
                           >
-                            Search Web
+                            Source Browser
                           </button>
                         </div>
 
@@ -1098,7 +1255,10 @@ export function WorkspaceLayout({
                               if (!driveUrl.trim()) return;
 
                               runAction(async () => {
-                                await apiRequest(
+                                const result = await apiRequest<{
+                                  knowledgeFile: KnowledgeFile;
+                                  duplicate?: boolean;
+                                }>(
                                   `/api/knowledge-bases/${activeKb.id}/files/from-drive-link`,
                                   {
                                     method: "POST",
@@ -1106,7 +1266,12 @@ export function WorkspaceLayout({
                                     body: JSON.stringify({ url: driveUrl }),
                                   }
                                 );
-                                setMessage("Google Drive import requested.");
+                                if (result.duplicate) {
+                                  setMessage("This Google Drive link is already indexed.");
+                                } else {
+                                  setMessage("Google Drive import requested.");
+                                  setActiveFiles((prev) => [result.knowledgeFile, ...prev]);
+                                }
                                 setDriveUrl("");
                                 router.refresh();
                               });
@@ -1130,89 +1295,158 @@ export function WorkspaceLayout({
                           </form>
                         )}
 
-                        {/* Web Search Importer Form */}
+                        {/* Source Browser */}
                         {addDocMethod === "web" && (
                           <div className="space-y-3">
-                            <div className="flex gap-2">
-                              <input
-                                value={webQuery}
-                                onChange={(e) => setWebQuery(e.target.value)}
-                                placeholder="WHO guidelines, papers..."
-                                className="flex-1 rounded border border-border-theme bg-card-bg px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal"
-                              />
-                              <select
-                                value={webPreset}
-                                onChange={(e) => setWebPreset(e.target.value)}
-                                className="rounded border border-border-theme bg-card-bg px-2 py-1.5 text-xs text-slate-500 dark:text-slate-350 outline-none focus:border-accent-teal"
-                              >
-                                <option value="all">All</option>
-                                <option value="pmc">PubMed</option>
-                                <option value="who">WHO</option>
-                                <option value="india">India</option>
-                              </select>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (!webQuery.trim()) return;
-                                  setWebSearching(true);
-                                  setError(null);
-                                  runAction(async () => {
-                                    try {
-                                      const res = await apiRequest<{ candidates: Candidate[] }>(
-                                        "/api/web-files/search",
-                                        {
-                                          method: "POST",
-                                          headers: { "content-type": "application/json" },
-                                          body: JSON.stringify({ query: webQuery, preset: webPreset }),
+                            <form
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                if (!directUrl.trim()) return;
+                                runAction(async () => {
+                                  await addWebSourceUrl(directUrl.trim());
+                                  setDirectUrl("");
+                                });
+                              }}
+                              className="space-y-2"
+                            >
+                              <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                Direct URL
+                              </label>
+                              <div className="flex gap-2">
+                                <input
+                                  value={directUrl}
+                                  onChange={(e) => setDirectUrl(e.target.value)}
+                                  placeholder="https://example.com/paper.pdf"
+                                  className="flex-1 rounded border border-border-theme bg-card-bg px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal"
+                                />
+                                <button
+                                  type="submit"
+                                  disabled={isPending || !directUrl.trim()}
+                                  className="rounded bg-accent-teal px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 transition disabled:opacity-40"
+                                >
+                                  Add
+                                </button>
+                              </div>
+                            </form>
+
+                            <div className="space-y-2 border-t border-border-theme pt-3">
+                              <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                Web Discovery
+                              </label>
+                              <div className="flex gap-2">
+                                <input
+                                  value={webQuery}
+                                  onChange={(e) => setWebQuery(e.target.value)}
+                                  placeholder="WHO guidelines, papers..."
+                                  className="flex-1 rounded border border-border-theme bg-card-bg px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal"
+                                />
+                                <select
+                                  value={webPreset}
+                                  onChange={(e) => setWebPreset(e.target.value)}
+                                  className="rounded border border-border-theme bg-card-bg px-2 py-1.5 text-xs text-slate-500 dark:text-slate-350 outline-none focus:border-accent-teal"
+                                >
+                                  <option value="all">All</option>
+                                  <option value="pmc">PubMed</option>
+                                  <option value="who">WHO</option>
+                                  <option value="india">India</option>
+                                  <option value="books">Books</option>
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (!webQuery.trim()) return;
+                                    setWebSearching(true);
+                                    setError(null);
+                                    runAction(async () => {
+                                      try {
+                                        const res = await apiRequest<{ candidates: Candidate[] }>(
+                                          "/api/web-files/search",
+                                          {
+                                            method: "POST",
+                                            headers: { "content-type": "application/json" },
+                                            body: JSON.stringify({ query: webQuery, preset: webPreset }),
+                                          }
+                                        );
+                                        setWebCandidates(res.candidates);
+                                        setSelectedCandidateUrls([]);
+                                        setCandidateAddState({});
+                                        if (res.candidates.length === 0) {
+                                          setMessage("No matching web files found.");
                                         }
-                                      );
-                                      setWebCandidates(res.candidates);
-                                      if (res.candidates.length === 0) {
-                                        setMessage("No matching web files found.");
+                                      } finally {
+                                        setWebSearching(false);
                                       }
-                                    } finally {
-                                      setWebSearching(false);
-                                    }
-                                  });
-                                }}
-                                disabled={isPending || webSearching}
-                                className="rounded bg-accent-teal px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 transition"
-                              >
-                                Find
-                              </button>
+                                    });
+                                  }}
+                                  disabled={isPending || webSearching}
+                                  className="rounded bg-accent-teal px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 transition"
+                                >
+                                  Find
+                                </button>
+                              </div>
                             </div>
 
-                            {/* Web search results */}
                             {webCandidates.length > 0 && (
-                              <div className="max-h-48 overflow-y-auto space-y-2 pt-2 border-t border-border-theme">
-                                {webCandidates.map((c) => (
-                                  <div key={c.url} className="rounded border border-border-theme bg-background p-2 text-[10px] space-y-1">
-                                    <div className="font-semibold text-slate-300 dark:text-slate-350 truncate" title={c.title}>
-                                      {c.title}
-                                    </div>
-                                    <div className="text-slate-550 truncate">{c.host} · .{c.extension}</div>
-                                    <p className="text-slate-450 text-[9px] leading-tight line-clamp-2">{c.reason}</p>
-                                    <button
-                                      onClick={() => {
-                                        runAction(async () => {
-                                          await apiRequest(
-                                            `/api/knowledge-bases/${activeKb.id}/files/from-web-url`,
-                                            {
-                                              method: "POST",
-                                              headers: { "content-type": "application/json" },
-                                              body: JSON.stringify({ url: c.url }),
-                                            }
-                                          );
-                                          setMessage("Web file added successfully.");
-                                          router.refresh();
-                                        });
-                                      }}
-                                      className="mt-1 w-full rounded bg-card-bg py-1 font-semibold text-slate-500 hover:bg-accent-teal hover:text-white transition text-[9px]"
-                                    >
-                                      Add File to KB
-                                    </button>
-                                  </div>
-                                ))}
+                              <div className="space-y-2 pt-2 border-t border-border-theme">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-[10px] text-slate-500">
+                                    {selectedCandidateUrls.length} selected
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => addSelectedCandidates()}
+                                    disabled={bulkAdding || selectedCandidateUrls.length === 0}
+                                    className="rounded bg-card-bg px-2.5 py-1 text-[10px] font-semibold text-slate-500 hover:bg-accent-teal hover:text-white transition disabled:opacity-40"
+                                  >
+                                    {bulkAdding ? "Adding..." : "Add Selected"}
+                                  </button>
+                                </div>
+
+                                <div className="max-h-56 overflow-y-auto space-y-2">
+                                  {webCandidates.map((c) => {
+                                    const addState = candidateAddState[c.url] ?? "idle";
+                                    const isIndexed = indexedSourceUrls.has(normalizeSourceUrl(c.url));
+                                    const isSelected = selectedCandidateUrls.includes(c.url);
+
+                                    return (
+                                      <div key={c.url} className="rounded border border-border-theme bg-background p-2 text-[10px] space-y-1">
+                                        <div className="flex items-start gap-2">
+                                          <input
+                                            type="checkbox"
+                                            checked={isSelected}
+                                            onChange={() => toggleCandidateSelection(c.url)}
+                                            disabled={isIndexed || addState === "added" || addState === "adding"}
+                                            className="mt-0.5"
+                                          />
+                                          <div className="min-w-0 flex-1 space-y-1">
+                                            <div className="font-semibold text-slate-300 dark:text-slate-350 truncate" title={c.title}>
+                                              {c.title}
+                                            </div>
+                                            <div className="text-slate-550 truncate">{c.host} · .{c.extension}</div>
+                                            <p className="text-slate-450 text-[9px] leading-tight line-clamp-2">{c.reason}</p>
+                                          </div>
+                                        </div>
+                                        <button
+                                          onClick={() => {
+                                            runAction(async () => {
+                                              await addWebSourceUrl(c.url);
+                                            });
+                                          }}
+                                          disabled={isIndexed || addState === "adding" || addState === "added"}
+                                          className="mt-1 w-full rounded bg-card-bg py-1 font-semibold text-slate-500 hover:bg-accent-teal hover:text-white transition text-[9px] disabled:opacity-50"
+                                        >
+                                          {isIndexed || addState === "duplicate"
+                                            ? "Already indexed"
+                                            : addState === "adding"
+                                              ? "Adding..."
+                                              : addState === "added"
+                                                ? "Added"
+                                                : "Add File to KB"}
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
                               </div>
                             )}
                           </div>
@@ -1221,9 +1455,49 @@ export function WorkspaceLayout({
                     )}
                   </div>
 
+                  {/* Document Filters */}
+                  <div className="rounded-xl border border-border-theme bg-background p-3 space-y-2">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                      Filter Indexed Documents
+                    </div>
+                    <input
+                      value={fileFilterQuery}
+                      onChange={(e) => setFileFilterQuery(e.target.value)}
+                      placeholder="Search by name or URL..."
+                      className="w-full rounded border border-border-theme bg-card-bg px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal"
+                    />
+                    <div className="flex gap-2">
+                      <select
+                        value={fileFilterSource}
+                        onChange={(e) => setFileFilterSource(e.target.value)}
+                        className="flex-1 rounded border border-border-theme bg-card-bg px-2 py-1.5 text-xs text-slate-500 outline-none focus:border-accent-teal"
+                      >
+                        <option value="all">All sources</option>
+                        <option value="local">Local</option>
+                        <option value="drive">Drive</option>
+                        <option value="web">Web</option>
+                        <option value="external">External</option>
+                      </select>
+                      <select
+                        value={fileFilterStatus}
+                        onChange={(e) => setFileFilterStatus(e.target.value)}
+                        className="flex-1 rounded border border-border-theme bg-card-bg px-2 py-1.5 text-xs text-slate-500 outline-none focus:border-accent-teal"
+                      >
+                        <option value="all">All statuses</option>
+                        <option value="completed">Completed</option>
+                        <option value="pending">Pending</option>
+                        <option value="in_progress">In progress</option>
+                        <option value="failed">Failed</option>
+                      </select>
+                    </div>
+                    <div className="text-[10px] text-slate-500">
+                      Showing {filteredFiles.length} of {activeFiles.length} files
+                    </div>
+                  </div>
+
                   {/* Documents List */}
                   <div className="space-y-2">
-                    {activeFiles.map((file) => (
+                    {filteredFiles.map((file) => (
                       <article
                         key={file.id}
                         className="rounded-xl border border-border-theme bg-background p-3.5 space-y-2 text-xs"
@@ -1236,6 +1510,17 @@ export function WorkspaceLayout({
                             <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 mt-0.5 block">
                               Source: {file.importSource.toLowerCase()}
                             </span>
+                            {file.sourceUrl && (
+                              <a
+                                href={file.sourceUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[10px] text-accent-teal hover:underline truncate block mt-0.5"
+                                title={file.sourceUrl}
+                              >
+                                {file.sourceUrl}
+                              </a>
+                            )}
                           </div>
                           <span
                             className={`rounded-full px-2 py-0.5 text-[9px] font-semibold flex items-center gap-1.5 ${
@@ -1262,9 +1547,11 @@ export function WorkspaceLayout({
                       </article>
                     ))}
 
-                    {activeFiles.length === 0 && (
+                    {filteredFiles.length === 0 && (
                       <div className="py-12 text-center text-xs text-slate-550 dark:text-slate-500 italic">
-                        No files index in this KB. Expand the section above to upload files.
+                        {activeFiles.length === 0
+                          ? "No files indexed in this KB. Expand the section above to upload files."
+                          : "No files match the current filters."}
                       </div>
                     )}
                   </div>

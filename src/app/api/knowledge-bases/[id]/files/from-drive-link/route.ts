@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { NextRequest } from "next/server";
 import { ApiError, errorResponse, jsonWithSession } from "@/lib/api";
 import { resolveGoogleDriveDownload } from "@/lib/drive";
-import { buildVectorFileAttributes, recordUsageEvent, requireKnowledgeBase, saveKnowledgeFile } from "@/lib/knowledge-base";
+import { buildVectorFileAttributes, findExistingKnowledgeFileBySourceUrl, recordUsageEvent, requireKnowledgeBase, saveKnowledgeFile } from "@/lib/knowledge-base";
 import { getOpenAIForRequest } from "@/lib/openai-server";
 import { prisma } from "@/lib/prisma";
 import { enforceFallbackRateLimit } from "@/lib/rate-limit";
@@ -34,6 +34,18 @@ export async function POST(
     }
 
     const payload = schema.parse(await request.json());
+
+    const existingFile = await findExistingKnowledgeFileBySourceUrl(
+      knowledgeBase.id,
+      payload.url,
+    );
+    if (existingFile) {
+      return jsonWithSession(sessionState, {
+        knowledgeFile: existingFile,
+        duplicate: true,
+      });
+    }
+
     const resolved = resolveGoogleDriveDownload(payload.url);
     const file = await downloadRemoteFile(resolved.downloadUrl, resolved.filename);
 
@@ -84,7 +96,10 @@ export async function POST(
       knowledgeBaseId: knowledgeBase.id,
     });
 
-    return jsonWithSession(sessionState, { knowledgeFile });
+    return jsonWithSession(sessionState, {
+      knowledgeFile,
+      duplicate: false,
+    });
   } catch (error) {
     return errorResponse(sessionState, error);
   }
