@@ -19,6 +19,7 @@ A Next.js experimentation app for building and testing multiple OpenAI File Sear
 - TypeScript
 - Tailwind CSS
 - Prisma client
+- Clerk authentication
 - SQLite for local development
 - OpenAI Responses API + vector stores
 
@@ -38,13 +39,39 @@ cp .env.example .env.local
 
 3. Add an `OPENAI_API_KEY` to `.env.local` if you want a server fallback key.
 
-4. Start the app:
+4. Configure Clerk in `.env.local` (create an application at [dashboard.clerk.com](https://dashboard.clerk.com)):
+
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
+- `CLERK_SECRET_KEY`
+- `NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in`
+- `NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up`
+
+5. Start the app:
 
 ```bash
 npm run dev
 ```
 
 The app starts on [http://localhost:3000](http://localhost:3000).
+
+## Authentication and knowledge base access
+
+The app uses [Clerk](https://clerk.com) for sign-in. Knowledge bases are either **public** or **private**:
+
+| Action | Anonymous | Signed-in (non-owner) | Owner |
+|--------|-----------|----------------------|-------|
+| Browse/search/chat public KBs | Yes | Yes | Yes |
+| Browse/search/chat private KBs | No | No | Yes |
+| Create or attach a KB | No | Yes (becomes owner) | Yes |
+| Upload or add files | No | No | Yes (own private KBs only) |
+
+- **Public** knowledge bases are system-owned (`ownerId` is null) and read-only in the app. They are created by `npm run seed:public-kbs`.
+- **Private** knowledge bases belong to the signed-in user who created or attached them.
+- Anonymous users can explore public knowledge bases without signing in.
+
+### Migration note
+
+When upgrading an existing database, knowledge bases matching the four seeded public names are marked `PUBLIC`. All other existing knowledge bases become `PRIVATE` with no owner and are hidden until you assign an `ownerId` in the database.
 
 ## API key behavior
 
@@ -66,6 +93,10 @@ Set these environment variables in Vercel:
 
 - `OPENAI_API_KEY`
 - `SESSION_SECRET`
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
+- `CLERK_SECRET_KEY`
+- `NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in`
+- `NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up`
 - `DATABASE_PROVIDER=postgresql`
 - `DATABASE_URL=<your-postgres-connection-string>`
 
@@ -86,7 +117,9 @@ This seeds:
 - Clinical Trials: Stroke
 - Ayurvedic Primary Care
 
-The script is idempotent: rerunning it reuses existing KBs by name and skips already-indexed source URLs.
+The script is idempotent: rerunning it reuses existing KBs by name and skips already-indexed source URLs. Seeded bases are stored as `PUBLIC` with no owner.
+
+After deploying schema changes to Postgres, run `npm run db:push` (or your migration workflow) before seeding.
 
 ## RAG API
 
@@ -140,5 +173,6 @@ The route returns an OpenAI-style `chat.completion` object. It also includes:
 ### Notes
 
 - `stream: true` is not supported yet and returns `501`.
+- Public knowledge bases work with an OpenAI API key only.
+- Private knowledge bases also require a signed-in Clerk session (browser cookie or authenticated request from the same origin).
 - The knowledge base id is shown in the workspace header after you open a project.
-- Existing app routes remain available under `/api/knowledge-bases/...` for the UI and internal workflows.

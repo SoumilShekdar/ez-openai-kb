@@ -13,10 +13,15 @@ model KnowledgeBase {
   description   String?
   vectorStoreId String          @unique
   sourceMode    SourceMode
+  visibility    KbVisibility    @default(PRIVATE)
+  ownerId       String?
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
   files         KnowledgeFile[]
   usageEvents   UsageEvent[]
+
+  @@index([visibility])
+  @@index([ownerId])
 }
 
 model KnowledgeFile {
@@ -49,6 +54,11 @@ model UsageEvent {
 
   @@index([sessionId, createdAt])
   @@index([eventType, createdAt])
+}
+
+enum KbVisibility {
+  PUBLIC
+  PRIVATE
 }
 
 enum SourceMode {

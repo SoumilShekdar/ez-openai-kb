@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireKnowledgeBase } from "@/lib/knowledge-base";
+import { getAuthContext, requireReadableKnowledgeBase } from "@/lib/kb-access";
 import { getSessionState } from "@/lib/session";
 import { errorResponse, jsonWithSession } from "@/lib/api";
 
@@ -12,7 +12,8 @@ export async function GET(
 
   try {
     const { id } = await context.params;
-    await requireKnowledgeBase(id);
+    const authContext = await getAuthContext();
+    await requireReadableKnowledgeBase(id, authContext);
 
     const knowledgeBase = await prisma.knowledgeBase.findUnique({
       where: { id },

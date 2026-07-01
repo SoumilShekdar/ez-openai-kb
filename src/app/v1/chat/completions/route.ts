@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { z } from "zod";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { getAuthContext, requireReadKb } from "@/lib/kb-access";
 import { requireKnowledgeBase } from "@/lib/knowledge-base";
 import {
   getApiKeyFromCompatRequest,
@@ -38,6 +39,12 @@ export async function POST(request: NextRequest) {
 
     const knowledgeBaseId = resolveKnowledgeBaseId(request, payload.model);
     const knowledgeBase = await requireKnowledgeBase(knowledgeBaseId);
+    const authContext = await getAuthContext();
+
+    if (knowledgeBase.visibility === "PRIVATE") {
+      requireReadKb(knowledgeBase, authContext);
+    }
+
     const apiKey = getApiKeyFromCompatRequest(request);
     const client = new OpenAI({ apiKey });
 

@@ -1,10 +1,15 @@
-import { ImportSource, KeyMode, SourceMode, UsageEventType } from "@prisma/client";
+import { ImportSource, KeyMode, KbVisibility, SourceMode, UsageEventType } from "@prisma/client";
 import OpenAI from "openai";
 import { ApiError } from "@/lib/api";
 import { validateSupportedFile } from "@/lib/file-support";
 import { prisma } from "@/lib/prisma";
 
-export async function createKnowledgeBase(name: string, description: string | null, client: OpenAI) {
+export async function createKnowledgeBase(
+  name: string,
+  description: string | null,
+  client: OpenAI,
+  ownerId: string,
+) {
   const vectorStore = await client.vectorStores.create({
     name,
     metadata: description ? { description } : undefined,
@@ -16,6 +21,8 @@ export async function createKnowledgeBase(name: string, description: string | nu
       description,
       vectorStoreId: vectorStore.id,
       sourceMode: SourceMode.CREATED,
+      visibility: KbVisibility.PRIVATE,
+      ownerId,
     },
   });
 }
@@ -23,6 +30,7 @@ export async function createKnowledgeBase(name: string, description: string | nu
 export async function attachKnowledgeBase(
   vectorStoreId: string,
   client: OpenAI,
+  ownerId: string,
   name?: string | null,
   description?: string | null,
 ) {
@@ -34,12 +42,16 @@ export async function attachKnowledgeBase(
       name: name?.trim() || vectorStore.name || "Attached knowledge base",
       description: description?.trim() || null,
       sourceMode: SourceMode.ATTACHED,
+      visibility: KbVisibility.PRIVATE,
+      ownerId,
     },
     create: {
       name: name?.trim() || vectorStore.name || "Attached knowledge base",
       description: description?.trim() || null,
       vectorStoreId,
       sourceMode: SourceMode.ATTACHED,
+      visibility: KbVisibility.PRIVATE,
+      ownerId,
     },
   });
 

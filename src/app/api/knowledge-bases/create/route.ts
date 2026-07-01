@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { NextRequest } from "next/server";
 import { createKnowledgeBase } from "@/lib/knowledge-base";
+import { requireAuthenticatedUserId } from "@/lib/kb-access";
 import { getOpenAIForRequest } from "@/lib/openai-server";
 import { getSessionState } from "@/lib/session";
 import { errorResponse, jsonWithSession } from "@/lib/api";
@@ -14,12 +15,14 @@ export async function POST(request: NextRequest) {
   const sessionState = getSessionState(request);
 
   try {
+    const ownerId = await requireAuthenticatedUserId();
     const payload = schema.parse(await request.json());
     const { client } = getOpenAIForRequest(request);
     const knowledgeBase = await createKnowledgeBase(
       payload.name,
       payload.description ?? null,
       client,
+      ownerId,
     );
 
     return jsonWithSession(sessionState, { knowledgeBase });
