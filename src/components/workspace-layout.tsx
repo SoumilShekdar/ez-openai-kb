@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { KnowledgeBase, KnowledgeFile } from "@prisma/client";
 import { apiRequest } from "@/lib/client-api";
 import { CitationAnswer } from "./citation-answer";
@@ -80,6 +80,11 @@ function formatBytes(bytes: number | null) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function shortenId(id: string, visible = 8) {
+  if (id.length <= visible + 4) return id;
+  return `${id.slice(0, 4)}…${id.slice(-visible)}`;
+}
+
 function normalizeSourceUrl(url: string) {
   try {
     const parsed = new URL(url.trim());
@@ -88,6 +93,42 @@ function normalizeSourceUrl(url: string) {
   } catch {
     return url.trim().replace(/\/$/, "");
   }
+}
+
+type CandidateAddState = "idle" | "adding" | "added" | "duplicate" | "error";
+
+function InlineSpinner({ className = "h-3 w-3 text-accent-teal" }: { className?: string }) {
+  return (
+    <svg className={`animate-spin ${className}`} fill="none" viewBox="0 0 24 24" aria-hidden="true">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+      />
+    </svg>
+  );
+}
+
+function PanelNotice({
+  tone,
+  children,
+}: {
+  tone: "error" | "info" | "success";
+  children: ReactNode;
+}) {
+  const styles =
+    tone === "error"
+      ? "border-rose-500/20 bg-rose-500/10 text-rose-600 dark:text-rose-300"
+      : tone === "success"
+        ? "border-teal-500/20 bg-teal-500/10 text-teal-600 dark:text-teal-300"
+        : "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+
+  return (
+    <div className={`rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${styles}`}>
+      {children}
+    </div>
+  );
 }
 
 export function WorkspaceLayout({
@@ -100,7 +141,6 @@ export function WorkspaceLayout({
   activeFiles: KnowledgeFile[];
 }) {
   const router = useRouter();
-  const [isPending, startTransition] = useTransition();
 
   // Dark/Light Theme state
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -138,10 +178,14 @@ export function WorkspaceLayout({
   const [webSearching, setWebSearching] = useState(false);
   const [directUrl, setDirectUrl] = useState("");
   const [selectedCandidateUrls, setSelectedCandidateUrls] = useState<string[]>([]);
-  const [candidateAddState, setCandidateAddState] = useState<
-    Record<string, "idle" | "adding" | "added" | "duplicate">
-  >({});
+  const [candidateAddState, setCandidateAddState] = useState<Record<string, CandidateAddState>>({});
+  const [candidateAddErrors, setCandidateAddErrors] = useState<Record<string, string>>({});
   const [bulkAdding, setBulkAdding] = useState(false);
+  const [directUrlAdding, setDirectUrlAdding] = useState(false);
+  const [webSearchError, setWebSearchError] = useState<string | null>(null);
+  const [directUrlError, setDirectUrlError] = useState<string | null>(null);
+  const [bulkAddError, setBulkAddError] = useState<string | null>(null);
+  const [webSearchAttempted, setWebSearchAttempted] = useState(false);
 
   // Indexed document filters
   const [fileFilterQuery, setFileFilterQuery] = useState("");
@@ -154,9 +198,21 @@ export function WorkspaceLayout({
   const [retrievalLoading, setRetrievalLoading] = useState(false);
   const [retrievalWarning, setRetrievalWarning] = useState<string | null>(null);
 
-  // Global notification states
-  const [error, setError] = useState<string | null>(null);
+  // Global notification states (sidebar-level successes)
   const [message, setMessage] = useState<string | null>(null);
+
+  // Scoped API states
+  const [creatingKb, setCreatingKb] = useState(false);
+  const [createKbError, setCreateKbError] = useState<string | null>(null);
+  const [attachingKb, setAttachingKb] = useState(false);
+  const [attachKbError, setAttachKbError] = useState<string | null>(null);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [driveImporting, setDriveImporting] = useState(false);
+  const [driveError, setDriveError] = useState<string | null>(null);
+  const [importMessage, setImportMessage] = useState<string | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [retrievalError, setRetrievalError] = useState<string | null>(null);
 
   // Local files copy for live status updates/polling
   const [activeFiles, setActiveFiles] = useState<KnowledgeFile[]>(initialActiveFiles);
@@ -269,11 +325,29 @@ export function WorkspaceLayout({
     setDirectUrl("");
     setSelectedCandidateUrls([]);
     setCandidateAddState({});
+    setCandidateAddErrors({});
+    setDirectUrlAdding(false);
+    setWebSearchError(null);
+    setDirectUrlError(null);
+    setBulkAddError(null);
+    setWebSearchAttempted(false);
+    setWebSearching(false);
+    setBulkAdding(false);
     setDriveUrl("");
     setFileFilterQuery("");
     setFileFilterSource("all");
     setFileFilterStatus("all");
-    setError(null);
+    setCreatingKb(false);
+    setCreateKbError(null);
+    setAttachingKb(false);
+    setAttachKbError(null);
+    setUploadingFile(false);
+    setUploadError(null);
+    setDriveImporting(false);
+    setDriveError(null);
+    setImportMessage(null);
+    setChatError(null);
+    setRetrievalError(null);
     setMessage(null);
   }, [activeKb?.id]);
 
@@ -383,33 +457,181 @@ export function WorkspaceLayout({
     });
   }, [activeFiles, fileFilterQuery, fileFilterSource, fileFilterStatus]);
 
-  function runAction(action: () => Promise<void>) {
-    setError(null);
+  async function handleCreateKnowledgeBase() {
+    if (!createName.trim()) return;
+
+    setCreatingKb(true);
+    setCreateKbError(null);
     setMessage(null);
-    startTransition(async () => {
-      try {
-        await action();
-      } catch (caughtError) {
-        setError(
-          caughtError instanceof Error
-            ? caughtError.message
-            : "Something went wrong."
-        );
-      }
-    });
+
+    try {
+      const result = await apiRequest<{ knowledgeBase: KnowledgeBase }>("/api/knowledge-bases/create", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: createName,
+          description: createDescription || null,
+        }),
+      });
+      setCreateName("");
+      setCreateDescription("");
+      setIsCreateOpen(false);
+      router.push(`/kb/${result.knowledgeBase.id}`);
+      router.refresh();
+    } catch (caughtError) {
+      setCreateKbError(
+        caughtError instanceof Error ? caughtError.message : "Failed to create knowledge base.",
+      );
+    } finally {
+      setCreatingKb(false);
+    }
   }
 
-  async function addWebSourceUrl(url: string) {
+  async function handleAttachKnowledgeBase() {
+    if (!attachId.trim()) return;
+
+    setAttachingKb(true);
+    setAttachKbError(null);
+    setMessage(null);
+
+    try {
+      const result = await apiRequest<{ knowledgeBase: KnowledgeBase }>("/api/knowledge-bases/attach", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          vectorStoreId: attachId,
+          name: attachName || null,
+        }),
+      });
+      setAttachId("");
+      setAttachName("");
+      setIsCreateOpen(false);
+      router.push(`/kb/${result.knowledgeBase.id}`);
+      router.refresh();
+    } catch (caughtError) {
+      setAttachKbError(
+        caughtError instanceof Error ? caughtError.message : "Failed to attach vector store.",
+      );
+    } finally {
+      setAttachingKb(false);
+    }
+  }
+
+  async function handleUploadFile(file: File) {
     if (!activeKb) return;
+
+    setUploadingFile(true);
+    setUploadError(null);
+    setImportMessage(null);
+
+    try {
+      const formData = new FormData();
+      formData.set("file", file);
+      const res = await apiRequest<{ knowledgeFile: KnowledgeFile }>(
+        `/api/knowledge-bases/${activeKb.id}/files/upload`,
+        {
+          method: "POST",
+          body: formData,
+        },
+      );
+      setImportMessage("Local file uploaded.");
+      setActiveFiles((prev) => [res.knowledgeFile, ...prev]);
+      router.refresh();
+    } catch (caughtError) {
+      setUploadError(
+        caughtError instanceof Error ? caughtError.message : "Failed to upload file.",
+      );
+    } finally {
+      setUploadingFile(false);
+    }
+  }
+
+  async function handleDriveImport(url: string) {
+    if (!activeKb) return;
+
+    setDriveImporting(true);
+    setDriveError(null);
+    setImportMessage(null);
+
+    try {
+      const result = await apiRequest<{
+        knowledgeFile: KnowledgeFile;
+        duplicate?: boolean;
+      }>(`/api/knowledge-bases/${activeKb.id}/files/from-drive-link`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+
+      if (result.duplicate) {
+        setImportMessage("This Google Drive link is already indexed.");
+      } else {
+        setImportMessage("Google Drive import started.");
+        setActiveFiles((prev) => [result.knowledgeFile, ...prev]);
+      }
+      setDriveUrl("");
+      router.refresh();
+    } catch (caughtError) {
+      setDriveError(
+        caughtError instanceof Error ? caughtError.message : "Failed to import Google Drive link.",
+      );
+    } finally {
+      setDriveImporting(false);
+    }
+  }
+
+  async function handleRetrievalSearch() {
+    if (!activeKb || !retrievalQuery.trim()) return;
+
+    setRetrievalLoading(true);
+    setRetrievalError(null);
+    setRetrievalWarning(null);
+    setRetrievalResults([]);
+
+    try {
+      const res = await apiRequest<{ results: SearchResult[] }>(
+        `/api/knowledge-bases/${activeKb.id}/search`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ query: retrievalQuery }),
+        },
+      );
+      setRetrievalResults(res.results);
+      if (res.results.length === 0) {
+        setRetrievalWarning("No matching chunks found for this query.");
+      }
+    } catch (caughtError) {
+      setRetrievalError(
+        caughtError instanceof Error ? caughtError.message : "Vector search failed. Try again.",
+      );
+    } finally {
+      setRetrievalLoading(false);
+    }
+  }
+
+  async function addWebSourceUrl(url: string): Promise<{ ok: true; duplicate?: boolean } | { ok: false; error: string }> {
+    if (!activeKb) {
+      return { ok: false, error: "No active knowledge base selected." };
+    }
 
     const normalized = normalizeSourceUrl(url);
     if (indexedSourceUrls.has(normalized)) {
       setCandidateAddState((prev) => ({ ...prev, [url]: "duplicate" }));
-      setMessage("This source URL is already indexed in this knowledge base.");
-      return;
+      setCandidateAddErrors((prev) => {
+        const next = { ...prev };
+        delete next[url];
+        return next;
+      });
+      return { ok: true, duplicate: true };
     }
 
     setCandidateAddState((prev) => ({ ...prev, [url]: "adding" }));
+    setCandidateAddErrors((prev) => {
+      const next = { ...prev };
+      delete next[url];
+      return next;
+    });
 
     try {
       const result = await apiRequest<{ knowledgeFile: KnowledgeFile; duplicate?: boolean }>(
@@ -423,16 +645,70 @@ export function WorkspaceLayout({
 
       if (result.duplicate) {
         setCandidateAddState((prev) => ({ ...prev, [url]: "duplicate" }));
-        setMessage("This source URL is already indexed in this knowledge base.");
       } else {
         setCandidateAddState((prev) => ({ ...prev, [url]: "added" }));
         setActiveFiles((prev) => [result.knowledgeFile, ...prev]);
-        setMessage("Web file added successfully.");
       }
       router.refresh();
+      return { ok: true, duplicate: result.duplicate };
     } catch (caughtError) {
-      setCandidateAddState((prev) => ({ ...prev, [url]: "idle" }));
-      throw caughtError;
+      const errorMessage =
+        caughtError instanceof Error ? caughtError.message : "Failed to add source to knowledge base.";
+      setCandidateAddState((prev) => ({ ...prev, [url]: "error" }));
+      setCandidateAddErrors((prev) => ({ ...prev, [url]: errorMessage }));
+      return { ok: false, error: errorMessage };
+    }
+  }
+
+  async function handleDirectUrlAdd(url: string) {
+    setDirectUrlError(null);
+    setDirectUrlAdding(true);
+
+    try {
+      const result = await addWebSourceUrl(url);
+      if (!result.ok) {
+        setDirectUrlError(result.error);
+        return;
+      }
+      if (result.duplicate) {
+        setMessage("This source URL is already indexed in this knowledge base.");
+        return;
+      }
+      setMessage("Web file added successfully.");
+      setDirectUrl("");
+    } finally {
+      setDirectUrlAdding(false);
+    }
+  }
+
+  async function handleWebSearch() {
+    if (!webQuery.trim()) return;
+
+    setWebSearching(true);
+    setWebSearchError(null);
+    setWebSearchAttempted(true);
+    setWebCandidates([]);
+    setSelectedCandidateUrls([]);
+    setCandidateAddState({});
+    setCandidateAddErrors({});
+    setBulkAddError(null);
+
+    try {
+      const res = await apiRequest<{ candidates: Candidate[] }>("/api/web-files/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: webQuery, preset: webPreset }),
+      });
+      setWebCandidates(res.candidates);
+      if (res.candidates.length === 0) {
+        setWebSearchError("No supported downloadable files matched this search.");
+      }
+    } catch (caughtError) {
+      setWebSearchError(
+        caughtError instanceof Error ? caughtError.message : "Web search failed. Try again in a moment.",
+      );
+    } finally {
+      setWebSearching(false);
     }
   }
 
@@ -446,51 +722,42 @@ export function WorkspaceLayout({
     if (!activeKb || selectedCandidateUrls.length === 0) return;
 
     setBulkAdding(true);
-    setError(null);
+    setBulkAddError(null);
 
     let addedCount = 0;
     let duplicateCount = 0;
+    let failedCount = 0;
 
     try {
       for (const url of selectedCandidateUrls) {
-        const normalized = normalizeSourceUrl(url);
-        if (indexedSourceUrls.has(normalized)) {
-          setCandidateAddState((prev) => ({ ...prev, [url]: "duplicate" }));
-          duplicateCount += 1;
+        const result = await addWebSourceUrl(url);
+        if (!result.ok) {
+          failedCount += 1;
           continue;
         }
-
-        setCandidateAddState((prev) => ({ ...prev, [url]: "adding" }));
-
-        try {
-          const result = await apiRequest<{ knowledgeFile: KnowledgeFile; duplicate?: boolean }>(
-            `/api/knowledge-bases/${activeKb.id}/files/from-web-url`,
-            {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ url }),
-            },
-          );
-
-          if (result.duplicate) {
-            setCandidateAddState((prev) => ({ ...prev, [url]: "duplicate" }));
-            duplicateCount += 1;
-          } else {
-            setCandidateAddState((prev) => ({ ...prev, [url]: "added" }));
-            setActiveFiles((prev) => [result.knowledgeFile, ...prev]);
-            addedCount += 1;
-          }
-        } catch {
-          setCandidateAddState((prev) => ({ ...prev, [url]: "idle" }));
+        if (result.duplicate) {
+          duplicateCount += 1;
+        } else {
+          addedCount += 1;
         }
       }
 
       setSelectedCandidateUrls([]);
-      setMessage(
-        `Added ${addedCount} source${addedCount === 1 ? "" : "s"}` +
-          (duplicateCount > 0 ? `, ${duplicateCount} already indexed.` : "."),
-      );
-      router.refresh();
+
+      if (addedCount > 0) {
+        setMessage(
+          `Added ${addedCount} source${addedCount === 1 ? "" : "s"}` +
+            (duplicateCount > 0 ? `, ${duplicateCount} already indexed.` : "."),
+        );
+      } else if (duplicateCount > 0 && failedCount === 0) {
+        setMessage("Selected sources were already indexed in this knowledge base.");
+      }
+
+      if (failedCount > 0) {
+        setBulkAddError(
+          `${failedCount} selected source${failedCount === 1 ? "" : "s"} failed to add. Check the errors below and retry.`,
+        );
+      }
     } finally {
       setBulkAdding(false);
     }
@@ -524,7 +791,7 @@ export function WorkspaceLayout({
 
     const userQuestion = chatInput.trim();
     setChatInput("");
-    setError(null);
+    setChatError(null);
 
     // Append user message
     const userMsg: ChatMessage = {
@@ -573,9 +840,9 @@ export function WorkspaceLayout({
       };
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (caughtError) {
-      setError(
-        caughtError instanceof Error ? caughtError.message : "Chat generation failed."
-      );
+      const errorMessage =
+        caughtError instanceof Error ? caughtError.message : "Chat generation failed.";
+      setChatError(errorMessage);
       const errorMsg: ChatMessage = {
         id: Math.random().toString(36).substr(2, 9),
         role: "system",
@@ -589,9 +856,9 @@ export function WorkspaceLayout({
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
+    <div className="flex h-screen w-full min-w-0 overflow-hidden bg-background text-foreground">
       {/* LEFT PANEL: PROJECTS & CREATION */}
-      <aside className="flex h-full w-80 flex-shrink-0 flex-col border-r border-border-theme bg-sidebar">
+      <aside className="flex h-full w-72 shrink-0 flex-col overflow-hidden border-r border-border-theme bg-sidebar sm:w-80">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border-theme px-5 py-4">
           <div className="flex items-center gap-2">
@@ -613,7 +880,7 @@ export function WorkspaceLayout({
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m0-12.728l.707.707m12.728 12.728l.707-.707M12 8a4 4 0 100 8 4 4 0 000-8z" />
                 </svg>
               ) : (
-                <svg className="h-4.5 w-4.5 text-indigo-650" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="h-4.5 w-4.5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
                 </svg>
               )}
@@ -723,7 +990,11 @@ export function WorkspaceLayout({
           <div className="border-b border-border-theme bg-input-theme px-4 py-4 space-y-4">
             <div className="flex border-b border-border-theme text-xs">
               <button
-                onClick={() => setCreateTab("create")}
+                onClick={() => {
+                  setCreateTab("create");
+                  setCreateKbError(null);
+                  setAttachKbError(null);
+                }}
                 className={`flex-1 pb-2 text-center font-medium ${
                   createTab === "create" ? "border-b-2 border-accent-teal text-accent-teal" : "text-slate-400"
                 }`}
@@ -731,7 +1002,11 @@ export function WorkspaceLayout({
                 Create Fresh
               </button>
               <button
-                onClick={() => setCreateTab("attach")}
+                onClick={() => {
+                  setCreateTab("attach");
+                  setCreateKbError(null);
+                  setAttachKbError(null);
+                }}
                 className={`flex-1 pb-2 text-center font-medium ${
                   createTab === "attach" ? "border-b-2 border-accent-teal text-accent-teal" : "text-slate-400"
                 }`}
@@ -744,31 +1019,17 @@ export function WorkspaceLayout({
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (!createName.trim()) return;
-                  runAction(async () => {
-                    const result = await apiRequest<{ knowledgeBase: KnowledgeBase }>(
-                      "/api/knowledge-bases/create",
-                      {
-                        method: "POST",
-                        headers: { "content-type": "application/json" },
-                        body: JSON.stringify({
-                          name: createName,
-                          description: createDescription || null,
-                        }),
-                      }
-                    );
-                    setCreateName("");
-                    setCreateDescription("");
-                    setIsCreateOpen(false);
-                    router.push(`/kb/${result.knowledgeBase.id}`);
-                    router.refresh();
-                  });
+                  void handleCreateKnowledgeBase();
                 }}
                 className="space-y-3"
               >
+                {createKbError && <PanelNotice tone="error">{createKbError}</PanelNotice>}
                 <input
                   value={createName}
-                  onChange={(e) => setCreateName(e.target.value)}
+                  onChange={(e) => {
+                    setCreateName(e.target.value);
+                    if (createKbError) setCreateKbError(null);
+                  }}
                   placeholder="KB Name (e.g., Pediatrics)"
                   className="w-full rounded border border-border-theme bg-card-bg px-3 py-2 text-xs text-foreground outline-none focus:border-accent-teal"
                   required
@@ -782,41 +1043,28 @@ export function WorkspaceLayout({
                 />
                 <button
                   type="submit"
-                  disabled={isPending}
-                  className="w-full rounded bg-teal-600 py-2 text-xs font-semibold text-white hover:bg-teal-700 transition disabled:opacity-60"
+                  disabled={creatingKb}
+                  className="flex w-full items-center justify-center gap-2 rounded bg-teal-600 py-2 text-xs font-semibold text-white hover:bg-teal-700 transition disabled:opacity-60"
                 >
-                  {isPending ? "Creating..." : "Create Knowledge Base"}
+                  {creatingKb && <InlineSpinner />}
+                  {creatingKb ? "Creating..." : "Create Knowledge Base"}
                 </button>
               </form>
             ) : (
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (!attachId.trim()) return;
-                  runAction(async () => {
-                    const result = await apiRequest<{ knowledgeBase: KnowledgeBase }>(
-                      "/api/knowledge-bases/attach",
-                      {
-                        method: "POST",
-                        headers: { "content-type": "application/json" },
-                        body: JSON.stringify({
-                          vectorStoreId: attachId,
-                          name: attachName || null,
-                        }),
-                      }
-                    );
-                    setAttachId("");
-                    setAttachName("");
-                    setIsCreateOpen(false);
-                    router.push(`/kb/${result.knowledgeBase.id}`);
-                    router.refresh();
-                  });
+                  void handleAttachKnowledgeBase();
                 }}
                 className="space-y-3"
               >
+                {attachKbError && <PanelNotice tone="error">{attachKbError}</PanelNotice>}
                 <input
                   value={attachId}
-                  onChange={(e) => setAttachId(e.target.value)}
+                  onChange={(e) => {
+                    setAttachId(e.target.value);
+                    if (attachKbError) setAttachKbError(null);
+                  }}
                   placeholder="OpenAI Vector Store ID (vs_...)"
                   className="w-full rounded border border-border-theme bg-card-bg px-3 py-2 text-xs text-foreground outline-none focus:border-accent-teal"
                   required
@@ -829,10 +1077,11 @@ export function WorkspaceLayout({
                 />
                 <button
                   type="submit"
-                  disabled={isPending}
-                  className="w-full rounded bg-teal-600 py-2 text-xs font-semibold text-white hover:bg-teal-700 transition disabled:opacity-60"
+                  disabled={attachingKb}
+                  className="flex w-full items-center justify-center gap-2 rounded bg-teal-600 py-2 text-xs font-semibold text-white hover:bg-teal-700 transition disabled:opacity-60"
                 >
-                  {isPending ? "Attaching..." : "Attach Vector Store"}
+                  {attachingKb && <InlineSpinner />}
+                  {attachingKb ? "Attaching..." : "Attach Vector Store"}
                 </button>
               </form>
             )}
@@ -840,31 +1089,31 @@ export function WorkspaceLayout({
         )}
 
         {/* Projects List */}
-        <div className="flex-1 overflow-y-auto px-2 py-4">
+        <div className="flex-1 min-w-0 overflow-y-auto px-2 py-4">
           <div className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
             Knowledge Bases ({filteredKbs.length})
           </div>
 
-          <div className="space-y-1">
+          <div className="space-y-2">
             {filteredKbs.map((kb) => {
               const isActive = activeKb?.id === kb.id;
               return (
-                <div key={kb.id} className="flex flex-col mb-1">
+                <div key={kb.id} className="flex flex-col">
                   <div
                     onClick={() => {
                       if (!isActive) {
                         router.push(`/kb/${kb.id}`);
                       }
                     }}
-                    className={`flex flex-col gap-1 rounded-xl px-4 py-3 text-left transition cursor-pointer ${
+                    className={`flex min-w-0 flex-col gap-1.5 rounded-xl px-4 py-3 text-left transition cursor-pointer ${
                       isActive
                         ? "bg-card-bg text-foreground shadow-sm border-l-2 border-accent-teal"
                         : "text-slate-400 hover:bg-card-bg/60 hover:text-foreground"
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold truncate">{kb.name}</span>
-                      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex min-w-0 items-center justify-between gap-2">
+                      <span className="min-w-0 truncate text-xs font-semibold">{kb.name}</span>
+                      <div className="flex shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                         {isActive && (
                           <button
                             type="button"
@@ -890,10 +1139,12 @@ export function WorkspaceLayout({
                       </div>
                     </div>
                     <div className="flex items-center justify-between text-[10px] text-slate-500">
-                      <span className="truncate max-w-[150px] font-mono text-[9px]">
-                        {kb.vectorStoreId}
-                      </span>
-                      <span>{kb.files.length} files</span>
+                      <span>{kb.files.length} file{kb.files.length === 1 ? "" : "s"}</span>
+                      {isActive && (
+                        <span className="truncate font-mono text-[9px]" title={kb.vectorStoreId}>
+                          {shortenId(kb.vectorStoreId)}
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -936,44 +1187,42 @@ export function WorkspaceLayout({
         </div>
 
         {/* Global Notifications */}
-        {(error || message) && (
+        {message && (
           <div className="p-3 border-t border-border-theme bg-input-theme text-xs">
-            {error && (
-              <div className="rounded border border-rose-950 bg-rose-950/40 p-2 text-rose-350 dark:text-rose-300">
-                {error}
-              </div>
-            )}
-            {message && (
-              <div className="rounded border border-teal-950 bg-teal-950/40 p-2 text-teal-350 dark:text-teal-300">
-                {message}
-              </div>
-            )}
+            <div className="rounded border border-teal-950 bg-teal-950/40 p-2 text-teal-350 dark:text-teal-300">
+              {message}
+            </div>
           </div>
         )}
       </aside>
 
       {/* CENTER PANEL: CHAT WINDOW */}
-      <main className="flex flex-1 flex-col h-full bg-background">
+      <main className="flex min-w-0 flex-1 flex-col h-full overflow-hidden bg-background">
         {activeKb ? (
           <>
             {/* Chat Header */}
-            <header className="flex items-center justify-between border-b border-border-theme bg-input-theme/80 px-6 py-4 backdrop-blur-sm">
-              <div className="min-w-0">
+            <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border-theme bg-input-theme/80 px-4 py-4 backdrop-blur-sm sm:px-6">
+              <div className="min-w-0 flex-1">
                 <h1 className="text-base font-semibold text-foreground truncate">{activeKb.name}</h1>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
                   {activeKb.description || "No description provided."}
                 </p>
               </div>
-              <div className="flex items-center gap-3">
-                <span className="rounded-full px-3 py-1 font-mono text-[10px] text-slate-400 border border-border-theme bg-card-bg">
-                  KB ID: {activeKb.id}
-                </span>
-                <span className="rounded-full px-3 py-1 font-mono text-[10px] text-slate-400 border border-border-theme bg-card-bg">
-                  VS ID: {activeKb.vectorStoreId}
-                </span>
-                <span className="rounded-full bg-accent-teal/15 border border-accent-teal/20 px-3 py-1 text-xs text-accent-teal font-medium">
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <span className="rounded-full bg-accent-teal/15 border border-accent-teal/20 px-3 py-1 text-xs text-accent-teal font-medium whitespace-nowrap">
                   {readyFilesCount} / {activeFiles.length} files ready
                 </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(activeKb.id);
+                    setMessage("Knowledge base ID copied.");
+                  }}
+                  className="rounded-full px-3 py-1 font-mono text-[10px] text-slate-400 border border-border-theme bg-card-bg hover:text-foreground transition whitespace-nowrap"
+                  title={activeKb.id}
+                >
+                  Copy KB ID
+                </button>
               </div>
             </header>
 
@@ -1001,7 +1250,7 @@ export function WorkspaceLayout({
                       />
 
                       {msg.role === "assistant" && (!msg.citations || msg.citations.length === 0) && (
-                        <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-2.5 text-xs text-amber-600 dark:text-amber-350 flex gap-2 items-start mt-2">
+                        <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-2.5 text-xs text-amber-600 dark:text-amber-300 flex gap-2 items-start mt-2">
                           <svg className="h-4.5 w-4.5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                           </svg>
@@ -1012,7 +1261,7 @@ export function WorkspaceLayout({
                       )}
 
                       {msg.role === "assistant" && (msg.citations && msg.citations.length > 0) && (!msg.annotations || msg.annotations.length === 0) && (
-                        <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-2.5 text-xs text-amber-600 dark:text-amber-350 flex gap-2 items-start mt-2">
+                        <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-2.5 text-xs text-amber-600 dark:text-amber-300 flex gap-2 items-start mt-2">
                           <svg className="h-4.5 w-4.5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                           </svg>
@@ -1050,6 +1299,11 @@ export function WorkspaceLayout({
             </div>
 
             {/* Chat Sticky Prompt Box */}
+            {chatError && (
+              <div className="border-t border-border-theme bg-input-theme px-6 pt-4">
+                <PanelNotice tone="error">{chatError}</PanelNotice>
+              </div>
+            )}
             <form onSubmit={handleSendChat} className="border-t border-border-theme bg-input-theme px-6 py-4">
               <div className="flex items-center gap-3 bg-card-bg border border-border-theme rounded-2xl px-4 py-2 focus-within:border-accent-teal transition">
                 <textarea
@@ -1069,10 +1323,15 @@ export function WorkspaceLayout({
                   type="submit"
                   disabled={!chatInput.trim() || chatLoading}
                   className="flex items-center justify-center h-8 w-8 rounded-xl bg-accent-teal text-white hover:opacity-90 transition disabled:opacity-40"
+                  title={chatLoading ? "Generating answer..." : "Send message"}
                 >
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                  </svg>
+                  {chatLoading ? (
+                    <InlineSpinner className="h-4 w-4 border-white/30 border-t-white" />
+                  ) : (
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                    </svg>
+                  )}
                 </button>
               </div>
               <div className="flex items-center justify-between text-[10px] text-slate-500 mt-2 px-1">
@@ -1093,7 +1352,7 @@ export function WorkspaceLayout({
               </div>
             </div>
             <h1 className="text-3xl font-semibold text-foreground tracking-tight">Knowledge Base Lab</h1>
-            <p className="mt-3 max-w-lg text-sm text-slate-450 dark:text-slate-400 leading-relaxed">
+            <p className="mt-3 max-w-lg text-sm text-slate-400 dark:text-slate-400 leading-relaxed">
               Redesigned into a premium triple-panel workspace. Select a project in the left sidebar or create a new knowledge base to begin.
             </p>
             {knowledgeBases.length === 0 && (
@@ -1109,20 +1368,20 @@ export function WorkspaceLayout({
       </main>
 
       {/* RIGHT PANEL: CONTEXT, DOCUMENTS & RETRIEVAL */}
-      <aside className="flex h-full w-96 flex-shrink-0 flex-col border-l border-border-theme bg-sidebar">
+      <aside className="flex h-full w-80 min-w-80 shrink-0 flex-col overflow-hidden border-l border-border-theme bg-sidebar xl:w-96 xl:min-w-96">
         {activeKb ? (
           <>
             {/* Header / Tabs */}
-            <div className="border-b border-border-theme">
-              <div className="px-5 py-4">
-                <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-450">Workspace Context</h2>
-                <p className="text-[10px] text-slate-500 mt-0.5">Manage source indexing and run retrieval checks</p>
+            <div className="shrink-0 border-b border-border-theme">
+              <div className="px-4 py-4">
+                <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">Workspace Context</h2>
+                <p className="text-[10px] text-slate-500 mt-0.5">Manage sources and run retrieval checks</p>
               </div>
 
               <div className="flex text-xs px-2">
                 <button
                   onClick={() => setRightTab("documents")}
-                  className={`flex-1 pb-3 text-center font-medium transition ${
+                  className={`min-w-0 flex-1 pb-3 text-center text-[11px] font-medium transition whitespace-nowrap sm:text-xs ${
                     rightTab === "documents"
                       ? "border-b-2 border-accent-teal text-accent-teal"
                       : "text-slate-400 hover:text-slate-200"
@@ -1132,7 +1391,7 @@ export function WorkspaceLayout({
                 </button>
                 <button
                   onClick={() => setRightTab("retrieval")}
-                  className={`flex-1 pb-3 text-center font-medium transition ${
+                  className={`min-w-0 flex-1 pb-3 text-center text-[11px] font-medium transition whitespace-nowrap sm:text-xs ${
                     rightTab === "retrieval"
                       ? "border-b-2 border-accent-teal text-accent-teal"
                       : "text-slate-400 hover:text-slate-200"
@@ -1144,17 +1403,17 @@ export function WorkspaceLayout({
             </div>
 
             {/* Content Area */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-4">
               {rightTab === "documents" ? (
                 <>
                   {/* Add Documents Accordion */}
                   <div className="rounded-xl border border-border-theme bg-background overflow-hidden">
                     <button
                       onClick={() => setAddDocExpanded(!addDocExpanded)}
-                      className="w-full flex items-center justify-between px-4 py-3 bg-card-bg text-xs font-semibold text-slate-450 hover:bg-input-theme hover:text-foreground transition"
+                      className="w-full flex items-center justify-between px-4 py-3 bg-card-bg text-xs font-semibold text-slate-400 hover:bg-input-theme hover:text-foreground transition"
                     >
-                      <span className="flex items-center gap-1.5">
-                        <svg className="h-4 w-4 text-accent-teal" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <span className="flex min-w-0 items-center gap-1.5 truncate">
+                        <svg className="h-4 w-4 shrink-0 text-accent-teal" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3m0 0v3m0-3h3m-3 0H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
                         Add New Documents
@@ -1171,10 +1430,16 @@ export function WorkspaceLayout({
 
                     {addDocExpanded && (
                       <div className="p-4 border-t border-border-theme bg-input-theme space-y-4">
+                        {importMessage && <PanelNotice tone="success">{importMessage}</PanelNotice>}
                         {/* Importer tabs */}
                         <div className="flex border-b border-border-theme text-[10px]">
                           <button
-                            onClick={() => setAddDocMethod("upload")}
+                            onClick={() => {
+                              setAddDocMethod("upload");
+                              setUploadError(null);
+                              setDriveError(null);
+                              setImportMessage(null);
+                            }}
                             className={`flex-1 pb-2 text-center font-medium ${
                               addDocMethod === "upload" ? "border-b border-accent-teal text-accent-teal" : "text-slate-400"
                             }`}
@@ -1182,7 +1447,12 @@ export function WorkspaceLayout({
                             Upload Local
                           </button>
                           <button
-                            onClick={() => setAddDocMethod("drive")}
+                            onClick={() => {
+                              setAddDocMethod("drive");
+                              setUploadError(null);
+                              setDriveError(null);
+                              setImportMessage(null);
+                            }}
                             className={`flex-1 pb-2 text-center font-medium ${
                               addDocMethod === "drive" ? "border-b border-accent-teal text-accent-teal" : "text-slate-400"
                             }`}
@@ -1190,7 +1460,12 @@ export function WorkspaceLayout({
                             Google Drive
                           </button>
                           <button
-                            onClick={() => setAddDocMethod("web")}
+                            onClick={() => {
+                              setAddDocMethod("web");
+                              setUploadError(null);
+                              setDriveError(null);
+                              setImportMessage(null);
+                            }}
                             className={`flex-1 pb-2 text-center font-medium ${
                               addDocMethod === "web" ? "border-b border-accent-teal text-accent-teal" : "text-slate-400"
                             }`}
@@ -1209,40 +1484,34 @@ export function WorkspaceLayout({
                               const selectedFile = fileInput?.files?.[0];
 
                               if (!selectedFile) {
-                                setError("Select a file first.");
+                                setUploadError("Select a file first.");
                                 return;
                               }
 
-                              runAction(async () => {
-                                const formData = new FormData();
-                                formData.set("file", selectedFile);
-                                const res = await apiRequest<{ knowledgeFile: KnowledgeFile }>(
-                                  `/api/knowledge-bases/${activeKb.id}/files/upload`,
-                                  {
-                                    method: "POST",
-                                    body: formData,
-                                  }
-                                );
-                                setMessage("Local file uploaded.");
+                              void handleUploadFile(selectedFile).then(() => {
                                 form.reset();
-                                setActiveFiles((prev) => [res.knowledgeFile, ...prev]);
-                                router.refresh();
                               });
                             }}
                             className="space-y-3"
                           >
+                            {uploadError && <PanelNotice tone="error">{uploadError}</PanelNotice>}
                             <input
                               name="file"
                               type="file"
+                              onChange={() => {
+                                if (uploadError) setUploadError(null);
+                                if (importMessage) setImportMessage(null);
+                              }}
                               className="w-full rounded border border-border-theme bg-card-bg px-2 py-1.5 text-xs text-foreground file:mr-2 file:rounded-md file:border-0 file:bg-teal-950/20 dark:file:bg-teal-950 file:px-2 file:py-1 file:font-semibold file:text-accent-teal"
                               required
                             />
                             <button
                               type="submit"
-                              disabled={isPending}
-                              className="w-full rounded bg-accent-teal py-1.5 text-xs font-semibold text-white hover:opacity-90 transition"
+                              disabled={uploadingFile}
+                              className="flex w-full items-center justify-center gap-2 rounded bg-accent-teal py-1.5 text-xs font-semibold text-white hover:opacity-90 transition disabled:opacity-60"
                             >
-                              {isPending ? "Uploading..." : "Upload File"}
+                              {uploadingFile && <InlineSpinner />}
+                              {uploadingFile ? "Uploading..." : "Upload File"}
                             </button>
                           </form>
                         )}
@@ -1252,45 +1521,30 @@ export function WorkspaceLayout({
                           <form
                             onSubmit={(e) => {
                               e.preventDefault();
-                              if (!driveUrl.trim()) return;
-
-                              runAction(async () => {
-                                const result = await apiRequest<{
-                                  knowledgeFile: KnowledgeFile;
-                                  duplicate?: boolean;
-                                }>(
-                                  `/api/knowledge-bases/${activeKb.id}/files/from-drive-link`,
-                                  {
-                                    method: "POST",
-                                    headers: { "content-type": "application/json" },
-                                    body: JSON.stringify({ url: driveUrl }),
-                                  }
-                                );
-                                if (result.duplicate) {
-                                  setMessage("This Google Drive link is already indexed.");
-                                } else {
-                                  setMessage("Google Drive import requested.");
-                                  setActiveFiles((prev) => [result.knowledgeFile, ...prev]);
-                                }
-                                setDriveUrl("");
-                                router.refresh();
-                              });
+                              if (!driveUrl.trim() || driveImporting) return;
+                              void handleDriveImport(driveUrl.trim());
                             }}
                             className="space-y-3"
                           >
+                            {driveError && <PanelNotice tone="error">{driveError}</PanelNotice>}
                             <input
                               value={driveUrl}
-                              onChange={(e) => setDriveUrl(e.target.value)}
+                              onChange={(e) => {
+                                setDriveUrl(e.target.value);
+                                if (driveError) setDriveError(null);
+                                if (importMessage) setImportMessage(null);
+                              }}
                               placeholder="Public link to Docs, Slides, Sheets..."
                               className="w-full rounded border border-border-theme bg-card-bg px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal"
                               required
                             />
                             <button
                               type="submit"
-                              disabled={isPending}
-                              className="w-full rounded bg-accent-teal py-1.5 text-xs font-semibold text-white hover:opacity-90 transition"
+                              disabled={driveImporting || !driveUrl.trim()}
+                              className="flex w-full items-center justify-center gap-2 rounded bg-accent-teal py-1.5 text-xs font-semibold text-white hover:opacity-90 transition disabled:opacity-60"
                             >
-                              {isPending ? "Submitting..." : "Import Link"}
+                              {driveImporting && <InlineSpinner />}
+                              {driveImporting ? "Submitting..." : "Import Link"}
                             </button>
                           </form>
                         )}
@@ -1298,14 +1552,19 @@ export function WorkspaceLayout({
                         {/* Source Browser */}
                         {addDocMethod === "web" && (
                           <div className="space-y-3">
+                            {(webSearchError || directUrlError || bulkAddError) && (
+                              <div className="space-y-2">
+                                {directUrlError && <PanelNotice tone="error">{directUrlError}</PanelNotice>}
+                                {webSearchError && <PanelNotice tone="error">{webSearchError}</PanelNotice>}
+                                {bulkAddError && <PanelNotice tone="error">{bulkAddError}</PanelNotice>}
+                              </div>
+                            )}
+
                             <form
                               onSubmit={(e) => {
                                 e.preventDefault();
-                                if (!directUrl.trim()) return;
-                                runAction(async () => {
-                                  await addWebSourceUrl(directUrl.trim());
-                                  setDirectUrl("");
-                                });
+                                if (!directUrl.trim() || directUrlAdding) return;
+                                void handleDirectUrlAdd(directUrl.trim());
                               }}
                               className="space-y-2"
                             >
@@ -1315,16 +1574,27 @@ export function WorkspaceLayout({
                               <div className="flex gap-2">
                                 <input
                                   value={directUrl}
-                                  onChange={(e) => setDirectUrl(e.target.value)}
+                                  onChange={(e) => {
+                                    setDirectUrl(e.target.value);
+                                    if (directUrlError) setDirectUrlError(null);
+                                  }}
                                   placeholder="https://example.com/paper.pdf"
-                                  className="flex-1 rounded border border-border-theme bg-card-bg px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal"
+                                  disabled={directUrlAdding}
+                                  className="flex-1 rounded border border-border-theme bg-card-bg px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal disabled:opacity-60"
                                 />
                                 <button
                                   type="submit"
-                                  disabled={isPending || !directUrl.trim()}
-                                  className="rounded bg-accent-teal px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 transition disabled:opacity-40"
+                                  disabled={directUrlAdding || !directUrl.trim()}
+                                  className="inline-flex items-center gap-1.5 rounded bg-accent-teal px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 transition disabled:opacity-40"
                                 >
-                                  Add
+                                  {directUrlAdding ? (
+                                    <>
+                                      <InlineSpinner className="h-3 w-3 text-white" />
+                                      Adding
+                                    </>
+                                  ) : (
+                                    "Add"
+                                  )}
                                 </button>
                               </div>
                             </form>
@@ -1336,14 +1606,19 @@ export function WorkspaceLayout({
                               <div className="flex gap-2">
                                 <input
                                   value={webQuery}
-                                  onChange={(e) => setWebQuery(e.target.value)}
+                                  onChange={(e) => {
+                                    setWebQuery(e.target.value);
+                                    if (webSearchError) setWebSearchError(null);
+                                  }}
                                   placeholder="WHO guidelines, papers..."
-                                  className="flex-1 rounded border border-border-theme bg-card-bg px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal"
+                                  disabled={webSearching}
+                                  className="flex-1 rounded border border-border-theme bg-card-bg px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal disabled:opacity-60"
                                 />
                                 <select
                                   value={webPreset}
                                   onChange={(e) => setWebPreset(e.target.value)}
-                                  className="rounded border border-border-theme bg-card-bg px-2 py-1.5 text-xs text-slate-500 dark:text-slate-350 outline-none focus:border-accent-teal"
+                                  disabled={webSearching}
+                                  className="rounded border border-border-theme bg-card-bg px-2 py-1.5 text-xs text-slate-500 outline-none focus:border-accent-teal disabled:opacity-60"
                                 >
                                   <option value="all">All</option>
                                   <option value="pmc">PubMed</option>
@@ -1353,95 +1628,150 @@ export function WorkspaceLayout({
                                 </select>
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    if (!webQuery.trim()) return;
-                                    setWebSearching(true);
-                                    setError(null);
-                                    runAction(async () => {
-                                      try {
-                                        const res = await apiRequest<{ candidates: Candidate[] }>(
-                                          "/api/web-files/search",
-                                          {
-                                            method: "POST",
-                                            headers: { "content-type": "application/json" },
-                                            body: JSON.stringify({ query: webQuery, preset: webPreset }),
-                                          }
-                                        );
-                                        setWebCandidates(res.candidates);
-                                        setSelectedCandidateUrls([]);
-                                        setCandidateAddState({});
-                                        if (res.candidates.length === 0) {
-                                          setMessage("No matching web files found.");
-                                        }
-                                      } finally {
-                                        setWebSearching(false);
-                                      }
-                                    });
-                                  }}
-                                  disabled={isPending || webSearching}
-                                  className="rounded bg-accent-teal px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 transition"
+                                  onClick={() => void handleWebSearch()}
+                                  disabled={webSearching || !webQuery.trim()}
+                                  className="inline-flex items-center gap-1.5 rounded bg-accent-teal px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 transition disabled:opacity-40"
                                 >
-                                  Find
+                                  {webSearching ? (
+                                    <>
+                                      <InlineSpinner className="h-3 w-3 text-white" />
+                                      Searching
+                                    </>
+                                  ) : (
+                                    "Find"
+                                  )}
                                 </button>
                               </div>
                             </div>
+
+                            {webSearching && (
+                              <div className="flex items-center gap-2 rounded-lg border border-border-theme bg-card-bg px-3 py-3 text-[11px] text-slate-500">
+                                <InlineSpinner />
+                                Searching the web for supported files...
+                              </div>
+                            )}
+
+                            {!webSearching && webSearchAttempted && webCandidates.length === 0 && !webSearchError && (
+                              <PanelNotice tone="info">
+                                No supported downloadable files matched this search. Try a different query or preset.
+                              </PanelNotice>
+                            )}
 
                             {webCandidates.length > 0 && (
                               <div className="space-y-2 pt-2 border-t border-border-theme">
                                 <div className="flex items-center justify-between gap-2">
                                   <span className="text-[10px] text-slate-500">
-                                    {selectedCandidateUrls.length} selected
+                                    {bulkAdding ? (
+                                      <span className="inline-flex items-center gap-1.5">
+                                        <InlineSpinner />
+                                        Adding selected sources...
+                                      </span>
+                                    ) : (
+                                      `${selectedCandidateUrls.length} selected`
+                                    )}
                                   </span>
                                   <button
                                     type="button"
-                                    onClick={() => addSelectedCandidates()}
+                                    onClick={() => void addSelectedCandidates()}
                                     disabled={bulkAdding || selectedCandidateUrls.length === 0}
-                                    className="rounded bg-card-bg px-2.5 py-1 text-[10px] font-semibold text-slate-500 hover:bg-accent-teal hover:text-white transition disabled:opacity-40"
+                                    className="inline-flex items-center gap-1.5 rounded bg-card-bg px-2.5 py-1 text-[10px] font-semibold text-slate-500 hover:bg-accent-teal hover:text-white transition disabled:opacity-40"
                                   >
-                                    {bulkAdding ? "Adding..." : "Add Selected"}
+                                    {bulkAdding ? (
+                                      <>
+                                        <InlineSpinner className="h-3 w-3" />
+                                        Adding...
+                                      </>
+                                    ) : (
+                                      "Add Selected"
+                                    )}
                                   </button>
                                 </div>
 
                                 <div className="max-h-56 overflow-y-auto space-y-2">
                                   {webCandidates.map((c) => {
                                     const addState = candidateAddState[c.url] ?? "idle";
-                                    const isIndexed = indexedSourceUrls.has(normalizeSourceUrl(c.url));
+                                    const addError = candidateAddErrors[c.url];
+                                    const isIndexed =
+                                      indexedSourceUrls.has(normalizeSourceUrl(c.url)) ||
+                                      addState === "duplicate";
                                     const isSelected = selectedCandidateUrls.includes(c.url);
 
                                     return (
-                                      <div key={c.url} className="rounded border border-border-theme bg-background p-2 text-[10px] space-y-1">
+                                      <div
+                                        key={c.url}
+                                        className={`rounded border bg-background p-2 text-[10px] space-y-1 ${
+                                          addState === "error"
+                                            ? "border-rose-500/30"
+                                            : "border-border-theme"
+                                        }`}
+                                      >
                                         <div className="flex items-start gap-2">
                                           <input
                                             type="checkbox"
                                             checked={isSelected}
                                             onChange={() => toggleCandidateSelection(c.url)}
-                                            disabled={isIndexed || addState === "added" || addState === "adding"}
+                                            disabled={
+                                              isIndexed ||
+                                              addState === "added" ||
+                                              addState === "adding" ||
+                                              bulkAdding
+                                            }
                                             className="mt-0.5"
                                           />
                                           <div className="min-w-0 flex-1 space-y-1">
-                                            <div className="font-semibold text-slate-300 dark:text-slate-350 truncate" title={c.title}>
+                                            <div
+                                              className="font-semibold text-slate-300 dark:text-slate-300 truncate"
+                                              title={c.title}
+                                            >
                                               {c.title}
                                             </div>
-                                            <div className="text-slate-550 truncate">{c.host} · .{c.extension}</div>
-                                            <p className="text-slate-450 text-[9px] leading-tight line-clamp-2">{c.reason}</p>
+                                            <div className="text-slate-500 truncate">
+                                              {c.host} · .{c.extension}
+                                            </div>
+                                            <p className="text-slate-400 text-[9px] leading-tight line-clamp-2">
+                                              {c.reason}
+                                            </p>
                                           </div>
                                         </div>
+
+                                        {addState === "error" && addError && (
+                                          <PanelNotice tone="error">{addError}</PanelNotice>
+                                        )}
+
                                         <button
+                                          type="button"
                                           onClick={() => {
-                                            runAction(async () => {
-                                              await addWebSourceUrl(c.url);
-                                            });
+                                            void (async () => {
+                                              const result = await addWebSourceUrl(c.url);
+                                              if (result.ok && !result.duplicate) {
+                                                setMessage("Web file added successfully.");
+                                              } else if (result.ok && result.duplicate) {
+                                                setMessage("This source URL is already indexed in this knowledge base.");
+                                              }
+                                            })();
                                           }}
-                                          disabled={isIndexed || addState === "adding" || addState === "added"}
-                                          className="mt-1 w-full rounded bg-card-bg py-1 font-semibold text-slate-500 hover:bg-accent-teal hover:text-white transition text-[9px] disabled:opacity-50"
+                                          disabled={
+                                            isIndexed ||
+                                            addState === "adding" ||
+                                            addState === "added" ||
+                                            bulkAdding
+                                          }
+                                          className="mt-1 inline-flex w-full items-center justify-center gap-1.5 rounded bg-card-bg py-1 font-semibold text-slate-500 hover:bg-accent-teal hover:text-white transition text-[9px] disabled:opacity-50"
                                         >
-                                          {isIndexed || addState === "duplicate"
-                                            ? "Already indexed"
-                                            : addState === "adding"
-                                              ? "Adding..."
-                                              : addState === "added"
-                                                ? "Added"
-                                                : "Add File to KB"}
+                                          {addState === "adding" ? (
+                                            <>
+                                              <InlineSpinner className="h-3 w-3" />
+                                              Adding...
+                                            </>
+                                          ) : isIndexed ? (
+                                            "Already indexed"
+                                          ) : addState === "added" ? (
+                                            "Added"
+                                          ) : addState === "error" ? (
+                                            "Retry add"
+                                          ) : (
+                                            "Add File to KB"
+                                          )}
                                         </button>
                                       </div>
                                     );
@@ -1458,7 +1788,7 @@ export function WorkspaceLayout({
                   {/* Document Filters */}
                   <div className="rounded-xl border border-border-theme bg-background p-3 space-y-2">
                     <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                      Filter Indexed Documents
+                      Filter Documents
                     </div>
                     <input
                       value={fileFilterQuery}
@@ -1466,7 +1796,7 @@ export function WorkspaceLayout({
                       placeholder="Search by name or URL..."
                       className="w-full rounded border border-border-theme bg-card-bg px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal"
                     />
-                    <div className="flex gap-2">
+                    <div className="flex flex-col gap-2">
                       <select
                         value={fileFilterSource}
                         onChange={(e) => setFileFilterSource(e.target.value)}
@@ -1532,7 +1862,7 @@ export function WorkspaceLayout({
                             }`}
                           >
                             {file.status === "IN_PROGRESS" || file.status === "PENDING" ? (
-                              <svg className="animate-spin h-2.5 w-2.5 text-amber-550 dark:text-amber-400" fill="none" viewBox="0 0 24 24">
+                              <svg className="animate-spin h-2.5 w-2.5 text-amber-500 dark:text-amber-400" fill="none" viewBox="0 0 24 24">
                                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                               </svg>
@@ -1548,7 +1878,7 @@ export function WorkspaceLayout({
                     ))}
 
                     {filteredFiles.length === 0 && (
-                      <div className="py-12 text-center text-xs text-slate-550 dark:text-slate-500 italic">
+                      <div className="py-12 text-center text-xs text-slate-500 dark:text-slate-500 italic">
                         {activeFiles.length === 0
                           ? "No files indexed in this KB. Expand the section above to upload files."
                           : "No files match the current filters."}
@@ -1559,57 +1889,42 @@ export function WorkspaceLayout({
               ) : (
                 /* Retrieval Search Panel */
                 <div className="space-y-4">
-                  <div className="flex gap-2">
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void handleRetrievalSearch();
+                    }}
+                    className="flex gap-2"
+                  >
                     <input
                       value={retrievalQuery}
-                      onChange={(e) => setRetrievalQuery(e.target.value)}
+                      onChange={(e) => {
+                        setRetrievalQuery(e.target.value);
+                        if (retrievalError) setRetrievalError(null);
+                      }}
                       placeholder="Enter search phrase..."
                       className="flex-1 rounded border border-border-theme bg-card-bg px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal"
                     />
                     <button
-                      onClick={() => {
-                        if (!retrievalQuery.trim()) return;
-                        setRetrievalLoading(true);
-                        setRetrievalWarning(null);
-                        setRetrievalResults([]);
-                        runAction(async () => {
-                          try {
-                            const res = await apiRequest<{ results: SearchResult[] }>(
-                              `/api/knowledge-bases/${activeKb.id}/search`,
-                              {
-                                method: "POST",
-                                headers: { "content-type": "application/json" },
-                                body: JSON.stringify({ query: retrievalQuery }),
-                              }
-                            );
-                            setRetrievalResults(res.results);
-                          } catch (err) {
-                            setRetrievalWarning(
-                              err instanceof Error ? err.message : "Vector search returned no matches."
-                            );
-                          } finally {
-                            setRetrievalLoading(false);
-                          }
-                        });
-                      }}
+                      type="submit"
                       disabled={retrievalLoading || !retrievalQuery.trim()}
-                      className="rounded bg-accent-teal px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 transition"
+                      className="flex items-center gap-1.5 rounded bg-accent-teal px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 transition disabled:opacity-60"
                     >
-                      Search
+                      {retrievalLoading && <InlineSpinner />}
+                      {retrievalLoading ? "Searching..." : "Search"}
                     </button>
-                  </div>
+                  </form>
 
                   {retrievalLoading && (
-                    <div className="text-center py-6 text-xs text-slate-500 animate-pulse-slow">
+                    <div className="flex items-center justify-center gap-2 py-6 text-xs text-slate-500">
+                      <InlineSpinner />
                       Running OpenAI vector search...
                     </div>
                   )}
 
-                  {retrievalWarning && (
-                    <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-300">
-                      {retrievalWarning}
-                    </div>
-                  )}
+                  {retrievalError && <PanelNotice tone="error">{retrievalError}</PanelNotice>}
+
+                  {retrievalWarning && <PanelNotice tone="info">{retrievalWarning}</PanelNotice>}
 
                   <div className="space-y-3">
                     {retrievalResults.map((r, i) => (
