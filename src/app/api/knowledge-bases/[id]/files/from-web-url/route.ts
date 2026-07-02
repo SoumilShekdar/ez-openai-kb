@@ -2,7 +2,8 @@ import { ImportSource, KeyMode, UsageEventType } from "@prisma/client";
 import { z } from "zod";
 import type { NextRequest } from "next/server";
 import { errorResponse, jsonWithSession } from "@/lib/api";
-import { buildVectorFileAttributes, findExistingKnowledgeFileBySourceUrl, recordUsageEvent, requireKnowledgeBase, saveKnowledgeFile } from "@/lib/knowledge-base";
+import { buildVectorFileAttributes, findExistingKnowledgeFileBySourceUrl, recordUsageEvent, saveKnowledgeFile } from "@/lib/knowledge-base";
+import { getAuthContext, requireWritableKnowledgeBase } from "@/lib/kb-access";
 import { getOpenAIForRequest } from "@/lib/openai-server";
 import { prisma } from "@/lib/prisma";
 import { enforceFallbackRateLimit } from "@/lib/rate-limit";
@@ -21,7 +22,8 @@ export async function POST(
 
   try {
     const { id } = await context.params;
-    const knowledgeBase = await requireKnowledgeBase(id);
+    const authContext = await getAuthContext();
+    const knowledgeBase = await requireWritableKnowledgeBase(id, authContext);
     const { client, keyMode } = getOpenAIForRequest(request);
 
     if (keyMode === "fallback") {

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import OpenAI from "openai";
-import { PrismaClient, ImportSource, SourceMode } from "@prisma/client";
+import { PrismaClient, ImportSource, SourceMode, KbVisibility } from "@prisma/client";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -198,6 +198,13 @@ async function createKnowledgeBase(client, prisma, name, description) {
     where: { name },
   });
   if (existing) {
+    await prisma.knowledgeBase.update({
+      where: { id: existing.id },
+      data: {
+        visibility: KbVisibility.PUBLIC,
+        ownerId: null,
+      },
+    });
     console.log(`  Reusing existing KB: ${name} (${existing.id})`);
     return existing;
   }
@@ -213,6 +220,8 @@ async function createKnowledgeBase(client, prisma, name, description) {
       description,
       vectorStoreId: vectorStore.id,
       sourceMode: SourceMode.CREATED,
+      visibility: KbVisibility.PUBLIC,
+      ownerId: null,
     },
   });
 

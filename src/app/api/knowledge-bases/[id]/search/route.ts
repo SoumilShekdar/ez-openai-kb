@@ -2,7 +2,8 @@ import { KeyMode, UsageEventType } from "@prisma/client";
 import { z } from "zod";
 import type { NextRequest } from "next/server";
 import { ApiError, errorResponse, jsonWithSession } from "@/lib/api";
-import { recordUsageEvent, requireKnowledgeBase } from "@/lib/knowledge-base";
+import { getAuthContext, requireReadableKnowledgeBase } from "@/lib/kb-access";
+import { recordUsageEvent } from "@/lib/knowledge-base";
 import { getOpenAIForRequest } from "@/lib/openai-server";
 import { prisma } from "@/lib/prisma";
 import { enforceFallbackRateLimit } from "@/lib/rate-limit";
@@ -20,7 +21,8 @@ export async function POST(
 
   try {
     const { id } = await context.params;
-    const knowledgeBase = await requireKnowledgeBase(id);
+    const authContext = await getAuthContext();
+    const knowledgeBase = await requireReadableKnowledgeBase(id, authContext);
     const { client, keyMode } = getOpenAIForRequest(request);
     const payload = schema.parse(await request.json());
 

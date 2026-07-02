@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { getAuthContext, listKbWhere } from "@/lib/kb-access";
 import { getSessionState } from "@/lib/session";
 import { errorResponse, jsonWithSession } from "@/lib/api";
 import type { NextRequest } from "next/server";
@@ -7,7 +8,9 @@ export async function GET(request: NextRequest) {
   const sessionState = getSessionState(request);
 
   try {
+    const authContext = await getAuthContext();
     const knowledgeBases = await prisma.knowledgeBase.findMany({
+      where: listKbWhere(authContext),
       include: {
         files: {
           orderBy: {

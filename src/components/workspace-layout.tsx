@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useAuth } from "@clerk/nextjs";
 import type { KnowledgeBase, KnowledgeFile } from "@prisma/client";
 import { apiRequest } from "@/lib/client-api";
+import { AuthControls } from "./auth-controls";
 import { CitationAnswer } from "./citation-answer";
 import { KbApiExportPanel } from "./kb-api-export-panel";
 
@@ -136,12 +138,18 @@ export function WorkspaceLayout({
   knowledgeBases,
   activeKb,
   activeFiles: initialActiveFiles,
+  isSignedIn,
+  canWriteActiveKb,
 }: {
   knowledgeBases: KnowledgeBaseWithFiles[];
   activeKb: KnowledgeBase | null;
   activeFiles: KnowledgeFile[];
+  isSignedIn: boolean;
+  canWriteActiveKb: boolean;
 }) {
   const router = useRouter();
+  const { isSignedIn: clerkSignedIn, isLoaded: clerkLoaded } = useAuth();
+  const signedIn = clerkLoaded ? Boolean(clerkSignedIn) : isSignedIn;
 
   // Dark/Light Theme state
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -910,6 +918,8 @@ export function WorkspaceLayout({
                 />
               </svg>
             </button>
+
+            <AuthControls />
           </div>
         </div>
 
@@ -968,29 +978,35 @@ export function WorkspaceLayout({
             />
           </div>
 
-          <button
-            onClick={() => setIsCreateOpen(!isCreateOpen)}
-            className="flex w-full items-center justify-between rounded-xl border border-border-theme bg-card-bg px-4 py-2.5 text-xs font-medium text-slate-400 hover:bg-input-theme hover:text-foreground transition"
-          >
-            <span className="flex items-center gap-2">
-              <svg className="h-4 w-4 text-accent-teal" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-              New Knowledge Base
-            </span>
-            <svg
-              className={`h-4 w-4 transform transition-transform ${isCreateOpen ? "rotate-180" : ""}`}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
+          {signedIn ? (
+            <button
+              onClick={() => setIsCreateOpen(!isCreateOpen)}
+              className="flex w-full items-center justify-between rounded-xl border border-border-theme bg-card-bg px-4 py-2.5 text-xs font-medium text-slate-400 hover:bg-input-theme hover:text-foreground transition"
             >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
+              <span className="flex items-center gap-2">
+                <svg className="h-4 w-4 text-accent-teal" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                New Knowledge Base
+              </span>
+              <svg
+                className={`h-4 w-4 transform transition-transform ${isCreateOpen ? "rotate-180" : ""}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+          ) : (
+            <p className="rounded-xl border border-border-theme bg-card-bg px-4 py-2.5 text-[11px] leading-relaxed text-slate-500">
+              Sign in to create or attach private knowledge bases. Public bases remain available to browse.
+            </p>
+          )}
         </div>
 
         {/* New Project Creator Accordion */}
-        {isCreateOpen && (
+        {isCreateOpen && signedIn && (
           <div className="border-b border-border-theme bg-input-theme px-4 py-4 space-y-4">
             <div className="flex border-b border-border-theme text-xs">
               <button
@@ -1118,6 +1134,11 @@ export function WorkspaceLayout({
                     <div className="flex min-w-0 items-center justify-between gap-2">
                       <span className="min-w-0 truncate text-xs font-semibold">{kb.name}</span>
                       <div className="flex shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        {kb.visibility === "PUBLIC" && (
+                          <span className="rounded-full bg-teal-950/30 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-accent-teal">
+                            Public
+                          </span>
+                        )}
                         {isActive && (
                           <button
                             type="button"
@@ -1428,6 +1449,7 @@ export function WorkspaceLayout({
               {rightTab === "documents" ? (
                 <>
                   {/* Add Documents Accordion */}
+                  {canWriteActiveKb ? (
                   <div className="rounded-xl border border-border-theme bg-background overflow-hidden">
                     <button
                       onClick={() => setAddDocExpanded(!addDocExpanded)}
@@ -1805,6 +1827,11 @@ export function WorkspaceLayout({
                       </div>
                     )}
                   </div>
+                  ) : (
+                    <div className="rounded-xl border border-border-theme bg-background px-4 py-3 text-[11px] leading-relaxed text-slate-500">
+                      This knowledge base is read-only. Sign in and create a private knowledge base to add documents.
+                    </div>
+                  )}
 
                   {/* Document Filters */}
                   <div className="rounded-xl border border-border-theme bg-background p-3 space-y-2">

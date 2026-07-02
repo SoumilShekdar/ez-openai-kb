@@ -28,6 +28,8 @@ db.exec(`
     "description" TEXT,
     "vectorStoreId" TEXT NOT NULL,
     "sourceMode" TEXT NOT NULL,
+    "visibility" TEXT NOT NULL DEFAULT 'PRIVATE',
+    "ownerId" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
@@ -78,6 +80,53 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS "UsageEvent_eventType_createdAt_idx"
   ON "UsageEvent"("eventType", "createdAt");
 `);
+
+const PUBLIC_KB_NAMES = [
+  "Clinical Trials: Cancer",
+  "Aneurysms",
+  "Clinical Trials: Stroke",
+  "Ayurvedic Primary Care",
+];
+
+function columnExists(table, column) {
+  const rows = db.prepare(`PRAGMA table_info("${table}")`).all();
+  return rows.some((row) => row.name === column);
+}
+
+function ensureKnowledgeBaseAuthColumns() {
+  if (!columnExists("KnowledgeBase", "visibility")) {
+    db.exec(`ALTER TABLE "KnowledgeBase" ADD COLUMN "visibility" TEXT NOT NULL DEFAULT 'PRIVATE';`);
+  }
+
+  if (!columnExists("KnowledgeBase", "ownerId")) {
+    db.exec(`ALTER TABLE "KnowledgeBase" ADD COLUMN "ownerId" TEXT;`);
+  }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS "KnowledgeBase_visibility_idx"
+    ON "KnowledgeBase"("visibility");
+
+    CREATE INDEX IF NOT EXISTS "KnowledgeBase_ownerId_idx"
+    ON "KnowledgeBase"("ownerId");
+  `);
+
+  const placeholders = PUBLIC_KB_NAMES.map(() => "?").join(", ");
+  db.prepare(
+    `UPDATE "KnowledgeBase"
+     SET "visibility" = 'PUBLIC', "ownerId" = NULL
+     WHERE "name" IN (${placeholders})`,
+  ).run(...PUBLIC_KB_NAMES);
+
+  db.prepare(
+    `UPDATE "KnowledgeBase"
+     SET "visibility" = 'PRIVATE', "ownerId" = NULL
+     WHERE "name" NOT IN (${placeholders})
+       AND ("visibility" IS NULL OR "visibility" = 'PRIVATE')
+       AND "ownerId" IS NULL`,
+  ).run(...PUBLIC_KB_NAMES);
+}
+
+ensureKnowledgeBaseAuthColumns();
 
 db.close();
 console.log(`Initialized SQLite database at ${databasePath}`);
