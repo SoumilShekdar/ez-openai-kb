@@ -69,6 +69,8 @@ export function buildChatCompletionsCurlExample({ baseUrl, kbId }: ExampleParams
   -H "Authorization: Bearer $OPENAI_API_KEY" \\
   -H "Content-Type: application/json" \\
   -H "x-knowledge-base-id: ${kbId}" \\
+  -H "x-qdrant-url: $QDRANT_URL" \\
+  -H "x-qdrant-api-key: $QDRANT_API_KEY" \\
   -d '${body.replace(/'/g, "'\\''")}'`;
 }
 
@@ -81,6 +83,8 @@ export function buildChatCompletionsFetchExample({ baseUrl, kbId }: ExampleParam
     Authorization: "Bearer " + process.env.OPENAI_API_KEY,
     "Content-Type": "application/json",
     "x-knowledge-base-id": "${kbId}",
+    "x-qdrant-url": process.env.QDRANT_URL,
+    "x-qdrant-api-key": process.env.QDRANT_API_KEY,
   },
   body: JSON.stringify({
     model: "${DEFAULT_RAG_MODEL}",

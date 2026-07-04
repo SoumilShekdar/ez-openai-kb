@@ -238,7 +238,7 @@ export function DashboardClient({
             >
               <div className="flex items-center justify-between gap-4">
                 <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-700">
-                  {knowledgeBase.sourceMode.toLowerCase()}
+                  {knowledgeBase.visibility.toLowerCase()}
                 </span>
                 <span className="text-xs text-slate-500">
                   {knowledgeBase.files.length} files
@@ -254,7 +254,7 @@ export function DashboardClient({
                 <div className="flex justify-between gap-4">
                   <dt>Vector store</dt>
                   <dd className="max-w-[12rem] truncate font-mono text-xs text-slate-500">
-                    {knowledgeBase.vectorStoreId}
+                    {knowledgeBase.qdrantCollectionName}
                   </dd>
                 </div>
                 <div className="flex justify-between gap-4">

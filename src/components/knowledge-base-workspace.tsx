@@ -92,7 +92,7 @@ export function KnowledgeBaseWorkspace({
           </Link>
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-700">
-              {knowledgeBase.sourceMode.toLowerCase()}
+              {knowledgeBase.visibility.toLowerCase()}
             </span>
             <span className="rounded-full bg-white/90 px-3 py-1 text-xs font-semibold text-slate-600">
               {completedCount}/{files.length} ready files
@@ -112,7 +112,7 @@ export function KnowledgeBaseWorkspace({
                 Vector store
               </dt>
               <dd className="mt-2 truncate font-mono text-sm text-slate-700">
-                {knowledgeBase.vectorStoreId}
+                {knowledgeBase.qdrantCollectionName}
               </dd>
             </div>
             <div className="rounded-[1.4rem] bg-white/70 p-4">

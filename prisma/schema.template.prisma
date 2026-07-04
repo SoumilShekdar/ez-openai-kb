@@ -8,37 +8,36 @@ datasource db {
 }
 
 model KnowledgeBase {
-  id            String          @id @default(cuid())
-  name          String
-  description   String?
-  vectorStoreId String          @unique
-  sourceMode    SourceMode
-  visibility    KbVisibility    @default(PRIVATE)
-  ownerId       String?
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
-  files         KnowledgeFile[]
-  usageEvents   UsageEvent[]
+  id                   String          @id @default(cuid())
+  name                 String
+  description          String?
+  qdrantCollectionName String          @unique
+  embeddingModel       String          @default("text-embedding-3-small")
+  visibility           KbVisibility    @default(PRIVATE)
+  ownerId              String?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  files                KnowledgeFile[]
+  usageEvents          UsageEvent[]
 
   @@index([visibility])
   @@index([ownerId])
 }
 
 model KnowledgeFile {
-  id                String        @id @default(cuid())
-  knowledgeBase     KnowledgeBase @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
-  knowledgeBaseId   String
-  openaiFileId      String        @unique
-  vectorStoreFileId String?
-  originalName      String
-  importSource      ImportSource
-  sourceUrl         String?
-  status            FileStatus
-  bytes             Int?
-  mimeType          String?
-  attributesJson    String?
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  id              String        @id @default(cuid())
+  knowledgeBase   KnowledgeBase @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
+  knowledgeBaseId String
+  originalName    String
+  importSource    ImportSource
+  sourceUrl       String?
+  status          FileStatus
+  bytes           Int?
+  mimeType        String?
+  chunkCount      Int           @default(0)
+  attributesJson  String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
   @@index([knowledgeBaseId, createdAt])
 }
@@ -61,16 +60,10 @@ enum KbVisibility {
   PRIVATE
 }
 
-enum SourceMode {
-  CREATED
-  ATTACHED
-}
-
 enum ImportSource {
   LOCAL
   DRIVE
   WEB
-  EXTERNAL
 }
 
 enum FileStatus {
@@ -84,6 +77,7 @@ enum UsageEventType {
   SEARCH
   CHAT
   FILE_ADD
+  WEB_SEARCH
 }
 
 enum KeyMode {

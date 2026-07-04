@@ -4,9 +4,10 @@ import type { NextRequest } from "next/server";
 import { ApiError, errorResponse, jsonWithSession } from "@/lib/api";
 import { getAuthContext, requireReadableKnowledgeBase } from "@/lib/kb-access";
 import { recordUsageEvent } from "@/lib/knowledge-base";
-import { getOpenAIForRequest } from "@/lib/openai-server";
+import { getRagClients } from "@/lib/credentials";
 import { prisma } from "@/lib/prisma";
 import { enforceFallbackRateLimit } from "@/lib/rate-limit";
+import { searchKnowledgeBase } from "@/lib/rag";
 import { getSessionState } from "@/lib/session";
 
 const schema = z.object({
@@ -23,10 +24,12 @@ export async function POST(
     const { id } = await context.params;
     const authContext = await getAuthContext();
     const knowledgeBase = await requireReadableKnowledgeBase(id, authContext);
-    const { client, keyMode } = getOpenAIForRequest(request);
+    const { openai, qdrant, credentials } = getRagClients(request, {
+      knowledgeBase,
+    });
     const payload = schema.parse(await request.json());
 
-    if (keyMode === "fallback") {
+    if (credentials.keyMode === "fallback") {
       await enforceFallbackRateLimit({
         prisma,
         sessionId: sessionState.sessionId,
@@ -34,26 +37,20 @@ export async function POST(
       });
     }
 
-    const response = await client.vectorStores.search(knowledgeBase.vectorStoreId, {
+    const results = await searchKnowledgeBase({
+      openaiClient: openai,
+      qdrantClient: qdrant,
+      collectionName: knowledgeBase.qdrantCollectionName,
       query: payload.query,
-      max_num_results: 8,
-      rewrite_query: true,
+      embeddingModel: knowledgeBase.embeddingModel,
     });
 
     await recordUsageEvent({
       sessionId: sessionState.sessionId,
       eventType: UsageEventType.SEARCH,
-      keyMode: keyMode === "user" ? KeyMode.USER : KeyMode.FALLBACK,
+      keyMode: credentials.keyMode === "user" ? KeyMode.USER : KeyMode.FALLBACK,
       knowledgeBaseId: knowledgeBase.id,
     });
-
-    const results = response.data.map((result) => ({
-      fileId: result.file_id,
-      filename: result.filename,
-      score: result.score,
-      snippet: result.content[0]?.text ?? "",
-      attributes: result.attributes ?? {},
-    }));
 
     if (!results.length) {
       throw new ApiError(

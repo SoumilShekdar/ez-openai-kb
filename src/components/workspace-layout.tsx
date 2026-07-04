@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
 import type { KnowledgeBase, KnowledgeFile } from "@prisma/client";
-import { apiRequest } from "@/lib/client-api";
+import { apiRequest, getStoredRagCredentials, saveStoredRagCredentials } from "@/lib/client-api";
 import { AuthControls } from "./auth-controls";
 import { CitationAnswer } from "./citation-answer";
 import { KbApiExportPanel } from "./kb-api-export-panel";
@@ -157,15 +157,15 @@ export function WorkspaceLayout({
   // Left sidebar states
   const [projectSearch, setProjectSearch] = useState("");
   const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [createTab, setCreateTab] = useState<"create" | "attach">("create");
   const [createName, setCreateName] = useState("");
   const [createDescription, setCreateDescription] = useState("");
-  const [attachId, setAttachId] = useState("");
-  const [attachName, setAttachName] = useState("");
+  const [createVisibility, setCreateVisibility] = useState<"PUBLIC" | "PRIVATE">("PUBLIC");
 
   // Settings states
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [apiKey, setApiKey] = useState("");
+  const [qdrantUrl, setQdrantUrl] = useState("");
+  const [qdrantApiKey, setQdrantApiKey] = useState("");
   const [savedKey, setSavedKey] = useState(false);
 
   // Chat window states
@@ -214,8 +214,6 @@ export function WorkspaceLayout({
   // Scoped API states
   const [creatingKb, setCreatingKb] = useState(false);
   const [createKbError, setCreateKbError] = useState<string | null>(null);
-  const [attachingKb, setAttachingKb] = useState(false);
-  const [attachKbError, setAttachKbError] = useState<string | null>(null);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [driveImporting, setDriveImporting] = useState(false);
@@ -238,9 +236,10 @@ export function WorkspaceLayout({
       document.documentElement.classList.remove("light");
     }
 
-    // API Key setup
-    const existing = window.sessionStorage.getItem("openai_user_key") || "";
-    setApiKey(existing);
+    const storedCredentials = getStoredRagCredentials();
+    setApiKey(storedCredentials.openaiApiKey);
+    setQdrantUrl(storedCredentials.qdrantUrl);
+    setQdrantApiKey(storedCredentials.qdrantApiKey);
 
     setAppOrigin(window.location.origin);
   }, []);
@@ -351,8 +350,6 @@ export function WorkspaceLayout({
     setFileFilterStatus("all");
     setCreatingKb(false);
     setCreateKbError(null);
-    setAttachingKb(false);
-    setAttachKbError(null);
     setUploadingFile(false);
     setUploadError(null);
     setDriveImporting(false);
@@ -431,7 +428,7 @@ export function WorkspaceLayout({
       (kb) =>
         kb.name.toLowerCase().includes(query) ||
         (kb.description && kb.description.toLowerCase().includes(query)) ||
-        kb.vectorStoreId.toLowerCase().includes(query)
+        kb.qdrantCollectionName.toLowerCase().includes(query)
     );
   }, [knowledgeBases, projectSearch]);
 
@@ -483,10 +480,12 @@ export function WorkspaceLayout({
         body: JSON.stringify({
           name: createName,
           description: createDescription || null,
+          visibility: createVisibility,
         }),
       });
       setCreateName("");
       setCreateDescription("");
+      setCreateVisibility("PUBLIC");
       setIsCreateOpen(false);
       router.push(`/kb/${result.knowledgeBase.id}`);
       router.refresh();
@@ -499,34 +498,15 @@ export function WorkspaceLayout({
     }
   }
 
-  async function handleAttachKnowledgeBase() {
-    if (!attachId.trim()) return;
-
-    setAttachingKb(true);
-    setAttachKbError(null);
-    setMessage(null);
-
-    try {
-      const result = await apiRequest<{ knowledgeBase: KnowledgeBase }>("/api/knowledge-bases/attach", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          vectorStoreId: attachId,
-          name: attachName || null,
-        }),
-      });
-      setAttachId("");
-      setAttachName("");
-      setIsCreateOpen(false);
-      router.push(`/kb/${result.knowledgeBase.id}`);
-      router.refresh();
-    } catch (caughtError) {
-      setAttachKbError(
-        caughtError instanceof Error ? caughtError.message : "Failed to attach vector store.",
-      );
-    } finally {
-      setAttachingKb(false);
-    }
+  function handleSaveCredentials() {
+    saveStoredRagCredentials({
+      openaiApiKey: apiKey,
+      qdrantUrl,
+      qdrantApiKey,
+    });
+    setSavedKey(true);
+    setTimeout(() => setSavedKey(false), 2000);
+    setIsSettingsOpen(false);
   }
 
   async function handleUploadFile(file: File) {
@@ -775,17 +755,6 @@ export function WorkspaceLayout({
     }
   }
 
-  function handleSaveKey() {
-    if (apiKey.trim()) {
-      window.sessionStorage.setItem("openai_user_key", apiKey.trim());
-    } else {
-      window.sessionStorage.removeItem("openai_user_key");
-    }
-    setSavedKey(true);
-    setTimeout(() => setSavedKey(false), 2000);
-    setIsSettingsOpen(false);
-  }
-
   const toggleTheme = () => {
     const newTheme = theme === "dark" ? "light" : "dark";
     setTheme(newTheme);
@@ -902,10 +871,14 @@ export function WorkspaceLayout({
             <button
               onClick={() => setIsSettingsOpen(!isSettingsOpen)}
               className="flex items-center justify-center rounded-lg p-1.5 text-slate-400 hover:bg-card-bg hover:text-foreground transition"
-              title="OpenAI Runtime Settings"
+              title="Runtime RAG Credentials"
             >
               <svg
-                className={`h-4.5 w-4.5 ${apiKey.trim() ? "text-teal-500" : "text-amber-500"}`}
+                className={`h-4.5 w-4.5 ${
+                  apiKey.trim() && qdrantUrl.trim() && qdrantApiKey.trim()
+                    ? "text-teal-500"
+                    : "text-amber-500"
+                }`}
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -927,29 +900,43 @@ export function WorkspaceLayout({
         {isSettingsOpen && (
           <div className="border-b border-border-theme bg-card-bg/95 px-4 py-4 text-xs space-y-3">
             <div className="flex items-center justify-between">
-              <span className="font-semibold text-foreground text-xs">Runtime OpenAI Key</span>
+              <span className="font-semibold text-foreground text-xs">Runtime RAG Credentials</span>
               <span className="rounded-full px-2 py-0.5 text-[10px] bg-background text-slate-400">
-                {apiKey.trim() ? "Session Key Active" : "Using .env Fallback"}
+                {apiKey.trim() && qdrantUrl.trim() && qdrantApiKey.trim()
+                  ? "Session Credentials Active"
+                  : "Using .env Fallback"}
               </span>
             </div>
             <p className="text-slate-400 dark:text-slate-400 leading-relaxed text-[11px]">
-              Stored only in browser memory. Stricter limits apply when using the fallback key.
+              Required for private knowledge bases. Stored only in browser session storage.
             </p>
-            <div className="flex gap-2">
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="sk-..."
-                className="flex-1 rounded border border-border-theme bg-background px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal"
-              />
-              <button
-                onClick={handleSaveKey}
-                className="rounded bg-teal-600 px-3 py-1.5 font-semibold text-white hover:bg-teal-700 transition"
-              >
-                Save
-              </button>
-            </div>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="OpenAI API key (sk-...)"
+              className="w-full rounded border border-border-theme bg-background px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal"
+            />
+            <input
+              type="url"
+              value={qdrantUrl}
+              onChange={(e) => setQdrantUrl(e.target.value)}
+              placeholder="Qdrant URL"
+              className="w-full rounded border border-border-theme bg-background px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal"
+            />
+            <input
+              type="password"
+              value={qdrantApiKey}
+              onChange={(e) => setQdrantApiKey(e.target.value)}
+              placeholder="Qdrant API key"
+              className="w-full rounded border border-border-theme bg-background px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-accent-teal"
+            />
+            <button
+              onClick={handleSaveCredentials}
+              className="w-full rounded bg-teal-600 px-3 py-1.5 font-semibold text-white hover:bg-teal-700 transition"
+            >
+              Save Credentials
+            </button>
             {savedKey && (
               <p className="text-[10px] text-teal-500 text-right">Saved successfully.</p>
             )}
@@ -1000,7 +987,7 @@ export function WorkspaceLayout({
             </button>
           ) : (
             <p className="rounded-xl border border-border-theme bg-card-bg px-4 py-2.5 text-[11px] leading-relaxed text-slate-500">
-              Sign in to create or attach private knowledge bases. Public bases remain available to browse.
+              Sign in to create knowledge bases. Public bases remain available to browse.
             </p>
           )}
         </div>
@@ -1008,103 +995,79 @@ export function WorkspaceLayout({
         {/* New Project Creator Accordion */}
         {isCreateOpen && signedIn && (
           <div className="border-b border-border-theme bg-input-theme px-4 py-4 space-y-4">
-            <div className="flex border-b border-border-theme text-xs">
-              <button
-                onClick={() => {
-                  setCreateTab("create");
-                  setCreateKbError(null);
-                  setAttachKbError(null);
-                }}
-                className={`flex-1 pb-2 text-center font-medium ${
-                  createTab === "create" ? "border-b-2 border-accent-teal text-accent-teal" : "text-slate-400"
-                }`}
-              >
-                Create Fresh
-              </button>
-              <button
-                onClick={() => {
-                  setCreateTab("attach");
-                  setCreateKbError(null);
-                  setAttachKbError(null);
-                }}
-                className={`flex-1 pb-2 text-center font-medium ${
-                  createTab === "attach" ? "border-b-2 border-accent-teal text-accent-teal" : "text-slate-400"
-                }`}
-              >
-                Attach Store
-              </button>
-            </div>
-
-            {createTab === "create" ? (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void handleCreateKnowledgeBase();
-                }}
-                className="space-y-3"
-              >
-                {createKbError && <PanelNotice tone="error">{createKbError}</PanelNotice>}
-                <input
-                  value={createName}
-                  onChange={(e) => {
-                    setCreateName(e.target.value);
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void handleCreateKnowledgeBase();
+              }}
+              className="space-y-3"
+            >
+              {createKbError && <PanelNotice tone="error">{createKbError}</PanelNotice>}
+              <div className="flex rounded border border-border-theme bg-card-bg p-1 text-xs">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCreateVisibility("PUBLIC");
                     if (createKbError) setCreateKbError(null);
                   }}
-                  placeholder="KB Name (e.g., Pediatrics)"
-                  className="w-full rounded border border-border-theme bg-card-bg px-3 py-2 text-xs text-foreground outline-none focus:border-accent-teal"
-                  required
-                />
-                <textarea
-                  value={createDescription}
-                  onChange={(e) => setCreateDescription(e.target.value)}
-                  placeholder="Description or audience notes"
-                  rows={2}
-                  className="w-full rounded border border-border-theme bg-card-bg px-3 py-2 text-xs text-foreground outline-none focus:border-accent-teal"
-                />
-                <button
-                  type="submit"
-                  disabled={creatingKb}
-                  className="flex w-full items-center justify-center gap-2 rounded bg-teal-600 py-2 text-xs font-semibold text-white hover:bg-teal-700 transition disabled:opacity-60"
+                  className={`flex-1 rounded px-2 py-1.5 font-medium transition ${
+                    createVisibility === "PUBLIC"
+                      ? "bg-accent-teal text-white"
+                      : "text-slate-400 hover:text-foreground"
+                  }`}
                 >
-                  {creatingKb && <InlineSpinner />}
-                  {creatingKb ? "Creating..." : "Create Knowledge Base"}
+                  Public
                 </button>
-              </form>
-            ) : (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void handleAttachKnowledgeBase();
-                }}
-                className="space-y-3"
-              >
-                {attachKbError && <PanelNotice tone="error">{attachKbError}</PanelNotice>}
-                <input
-                  value={attachId}
-                  onChange={(e) => {
-                    setAttachId(e.target.value);
-                    if (attachKbError) setAttachKbError(null);
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCreateVisibility("PRIVATE");
+                    if (createKbError) setCreateKbError(null);
                   }}
-                  placeholder="OpenAI Vector Store ID (vs_...)"
-                  className="w-full rounded border border-border-theme bg-card-bg px-3 py-2 text-xs text-foreground outline-none focus:border-accent-teal"
-                  required
-                />
-                <input
-                  value={attachName}
-                  onChange={(e) => setAttachName(e.target.value)}
-                  placeholder="Display Name (optional)"
-                  className="w-full rounded border border-border-theme bg-card-bg px-3 py-2 text-xs text-foreground outline-none focus:border-accent-teal"
-                />
-                <button
-                  type="submit"
-                  disabled={attachingKb}
-                  className="flex w-full items-center justify-center gap-2 rounded bg-teal-600 py-2 text-xs font-semibold text-white hover:bg-teal-700 transition disabled:opacity-60"
+                  className={`flex-1 rounded px-2 py-1.5 font-medium transition ${
+                    createVisibility === "PRIVATE"
+                      ? "bg-accent-teal text-white"
+                      : "text-slate-400 hover:text-foreground"
+                  }`}
                 >
-                  {attachingKb && <InlineSpinner />}
-                  {attachingKb ? "Attaching..." : "Attach Vector Store"}
+                  Private
                 </button>
-              </form>
-            )}
+              </div>
+              {createVisibility === "PUBLIC" ? (
+                <p className="text-[11px] leading-relaxed text-slate-500">
+                  Public knowledge bases use the server&apos;s OpenAI and Qdrant credentials. Anyone can read them; only you can add documents.
+                </p>
+              ) : (
+                <p className="text-[11px] leading-relaxed text-slate-500">
+                  Private knowledge bases require your OpenAI API key, Qdrant URL, and Qdrant API key in Runtime RAG Credentials.
+                </p>
+              )}
+              <input
+                value={createName}
+                onChange={(e) => {
+                  setCreateName(e.target.value);
+                  if (createKbError) setCreateKbError(null);
+                }}
+                placeholder="KB Name (e.g., Pediatrics)"
+                className="w-full rounded border border-border-theme bg-card-bg px-3 py-2 text-xs text-foreground outline-none focus:border-accent-teal"
+                required
+              />
+              <textarea
+                value={createDescription}
+                onChange={(e) => setCreateDescription(e.target.value)}
+                placeholder="Description or audience notes"
+                rows={2}
+                className="w-full rounded border border-border-theme bg-card-bg px-3 py-2 text-xs text-foreground outline-none focus:border-accent-teal"
+              />
+              <button
+                type="submit"
+                disabled={creatingKb}
+                className="flex w-full items-center justify-center gap-2 rounded bg-teal-600 py-2 text-xs font-semibold text-white hover:bg-teal-700 transition disabled:opacity-60"
+              >
+                {creatingKb && <InlineSpinner />}
+                {creatingKb ? "Creating..." : "Create Knowledge Base"}
+              </button>
+            </form>
           </div>
         )}
 
@@ -1158,7 +1121,7 @@ export function WorkspaceLayout({
                         )}
                         {!isActive && (
                           <span className="text-[9px] rounded px-1.5 py-0.5 bg-background dark:bg-slate-950/60 font-semibold tracking-wide uppercase">
-                            {kb.sourceMode.toLowerCase()}
+                            {kb.visibility.toLowerCase()}
                           </span>
                         )}
                       </div>
@@ -1166,8 +1129,8 @@ export function WorkspaceLayout({
                     <div className="flex items-center justify-between text-[10px] text-slate-500">
                       <span>{kb.files.length} file{kb.files.length === 1 ? "" : "s"}</span>
                       {isActive && (
-                        <span className="truncate font-mono text-[9px]" title={kb.vectorStoreId}>
-                          {shortenId(kb.vectorStoreId)}
+                        <span className="truncate font-mono text-[9px]" title={kb.qdrantCollectionName}>
+                          {shortenId(kb.qdrantCollectionName)}
                         </span>
                       )}
                     </div>
@@ -1367,7 +1330,7 @@ export function WorkspaceLayout({
                 </button>
               </div>
               <div className="flex items-center justify-between text-[10px] text-slate-500 mt-2 px-1">
-                <span>Grounded Answer generated with OpenAI File Search.</span>
+                <span>Grounded answer generated with Qdrant retrieval and OpenAI.</span>
                 <span>Shift + Enter for new line.</span>
               </div>
             </form>
@@ -1972,7 +1935,7 @@ export function WorkspaceLayout({
                   {retrievalLoading && (
                     <div className="flex items-center justify-center gap-2 py-6 text-xs text-slate-500">
                       <InlineSpinner />
-                      Running OpenAI vector search...
+                      Running Qdrant vector search...
                     </div>
                   )}
 

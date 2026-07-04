@@ -1,9 +1,27 @@
+import type { QdrantClient } from "@qdrant/js-client-rest";
 import type OpenAI from "openai";
+import {
+  DEFAULT_EMBEDDING_MODEL,
+  DEFAULT_QDRANT_SCORE_THRESHOLD,
+  DEFAULT_RETRIEVAL_LIMIT,
+} from "@/lib/env";
+import { embedQuery } from "@/lib/embeddings";
+import { searchCollection, type RetrievedChunk } from "@/lib/qdrant";
 
-export const DEFAULT_RAG_MODEL = "gpt-5.5";
+export const DEFAULT_RAG_MODEL = "gpt-4.1-mini";
 
-export const DEFAULT_SYSTEM_PROMPT =
-  "You are a medical knowledge-base assistant. Answer ONLY using the retrieved file content. Do not use outside knowledge or general clinical knowledge. If the answer is not in the files, say: 'I cannot find that in the files.' For every sentence/statement you make, you must either ground it using a file citation (e.g. 【1†source】) or, if you must include outside knowledge or conversational filler that is not directly found in the files, you MUST append '[not in files]' at the end of that sentence.";
+export const DEFAULT_SYSTEM_PROMPT = [
+  "You are a strict retrieval-grounded knowledge-base assistant.",
+  "",
+  "RULES:",
+  "1. Answer using ONLY the information in the numbered context blocks provided below. Treat the context as your only source of truth.",
+  "2. Do NOT use outside knowledge, prior training, general clinical knowledge, or assumptions. If it is not in the context, you do not know it.",
+  "3. Every factual sentence MUST end with one or more citation markers in the exact format 【N†source】, where N is the number of the context block the fact came from. Cite every block you used.",
+  "4. If the context does not contain the answer, respond with exactly: \"I cannot find that in the knowledge base.\" Do not add anything else.",
+  "5. If the context only partially answers the question, answer only the part that is supported, then add a final sentence beginning with \"Not in the knowledge base:\" that briefly names what was asked but not found. Mark that sentence with [not in files].",
+  "6. Do not include disclaimers, general advice, or conversational filler that is not grounded in the context.",
+  "7. Never invent citation numbers. Only cite context blocks that actually exist.",
+].join("\n");
 
 export type RagCitation = {
   fileId: string;
@@ -31,143 +49,184 @@ export type RagResult = {
   responseId: string;
 };
 
-type ResponsesOutput = {
-  id?: string;
-  output_text?: string;
-  output?: Array<{
-    type?: string;
-    content?: Array<{
-      type?: string;
-      text?: string;
-      annotations?: Array<{
-        type?: string;
-        file_id?: string;
-        filename?: string;
-        index?: number;
-        text?: string;
-      }>;
-    }>;
-  }>;
+export type SearchResult = {
+  fileId: string;
+  filename: string;
+  score: number;
+  snippet: string;
+  attributes: Record<string, string | number | boolean>;
 };
 
-function extractMessageText(response: ResponsesOutput) {
-  if (response.output_text) {
-    return response.output_text;
-  }
-
-  const message = response.output?.find((item) => item.type === "message");
-  const outputText = message?.content?.find((part) => part.type === "output_text");
-  return outputText?.text ?? "";
+function buildContextBlock(chunk: RetrievedChunk, index: number) {
+  return `[${index + 1}] ${chunk.payload.filename}\n${chunk.payload.text}`;
 }
 
-function extractCitations(response: ResponsesOutput): RagCitation[] {
-  const citations: RagCitation[] = [];
-  const message = response.output?.find((item) => item.type === "message");
+function buildContextPrompt(chunks: RetrievedChunk[]) {
+  return chunks.map((chunk, index) => buildContextBlock(chunk, index)).join("\n\n");
+}
 
-  for (const part of message?.content ?? []) {
-    if (part.type !== "output_text") {
-      continue;
-    }
-
-    for (const annotation of part.annotations ?? []) {
-      if (annotation.type !== "file_citation") {
-        continue;
-      }
-
-      citations.push({
-        fileId: annotation.file_id ?? "unknown",
-        filename: annotation.filename ?? annotation.file_id ?? "Unknown file",
-        index: annotation.index ?? 0,
-      });
-    }
-  }
-
+function chunksToCitations(chunks: RetrievedChunk[]): RagCitation[] {
   const unique = new Map<string, RagCitation>();
-  for (const citation of citations) {
-    unique.set(`${citation.fileId}:${citation.filename}`, citation);
-  }
+
+  chunks.forEach((chunk, index) => {
+    unique.set(`${chunk.payload.fileId}:${chunk.payload.filename}`, {
+      fileId: chunk.payload.fileId,
+      filename: chunk.payload.filename,
+      index,
+    });
+  });
 
   return [...unique.values()];
 }
 
-function extractAnnotations(response: ResponsesOutput): RagAnnotation[] {
-  const annotations: RagAnnotation[] = [];
-  const message = response.output?.find((item) => item.type === "message");
+function extractUsedCitationIndexes(answer: string, maxIndex: number) {
+  const matches = answer.matchAll(/【(\d+)†source】/g);
+  const indexes = new Set<number>();
 
-  for (const part of message?.content ?? []) {
-    if (part.type !== "output_text") {
-      continue;
-    }
-
-    for (const annotation of part.annotations ?? []) {
-      if (annotation.type !== "file_citation") {
-        continue;
-      }
-
-      annotations.push({
-        text: annotation.text ?? `【${annotation.index ?? 0}†source】`,
-        fileId: annotation.file_id ?? "unknown",
-        filename: annotation.filename ?? annotation.file_id ?? "Unknown file",
-        index: annotation.index ?? 0,
-      });
+  for (const match of matches) {
+    const value = Number(match[1]);
+    if (Number.isInteger(value) && value >= 1 && value <= maxIndex) {
+      indexes.add(value - 1);
     }
   }
 
-  return annotations;
+  return indexes;
 }
 
-export function toResponsesInput(messages: RagMessage[]) {
-  return messages.map((message) => ({
-    role: message.role,
-    content: [
-      {
-        type: "input_text" as const,
-        text: message.content,
-      },
-    ],
+function buildAnnotations(answer: string, chunks: RetrievedChunk[]): RagAnnotation[] {
+  const usedIndexes = extractUsedCitationIndexes(answer, chunks.length);
+  const targetIndexes =
+    usedIndexes.size > 0 ? [...usedIndexes] : chunks.map((_, index) => index);
+
+  return targetIndexes.map((index) => {
+    const chunk = chunks[index];
+    return {
+      text: `【${index + 1}†source】`,
+      fileId: chunk.payload.fileId,
+      filename: chunk.payload.filename,
+      index,
+    };
+  });
+}
+
+export async function retrieveRelevantChunks({
+  openaiClient,
+  qdrantClient,
+  collectionName,
+  query,
+  embeddingModel = DEFAULT_EMBEDDING_MODEL,
+  limit = DEFAULT_RETRIEVAL_LIMIT,
+  scoreThreshold = DEFAULT_QDRANT_SCORE_THRESHOLD,
+}: {
+  openaiClient: OpenAI;
+  qdrantClient: QdrantClient;
+  collectionName: string;
+  query: string;
+  embeddingModel?: string;
+  limit?: number;
+  scoreThreshold?: number;
+}) {
+  const vector = await embedQuery(openaiClient, query, embeddingModel);
+  return searchCollection(qdrantClient, collectionName, vector, {
+    limit,
+    scoreThreshold,
+  });
+}
+
+export async function searchKnowledgeBase({
+  openaiClient,
+  qdrantClient,
+  collectionName,
+  query,
+  embeddingModel = DEFAULT_EMBEDDING_MODEL,
+}: {
+  openaiClient: OpenAI;
+  qdrantClient: QdrantClient;
+  collectionName: string;
+  query: string;
+  embeddingModel?: string;
+}): Promise<SearchResult[]> {
+  const chunks = await retrieveRelevantChunks({
+    openaiClient,
+    qdrantClient,
+    collectionName,
+    query,
+    embeddingModel,
+  });
+
+  return chunks.map((chunk) => ({
+    fileId: chunk.payload.fileId,
+    filename: chunk.payload.filename,
+    score: chunk.score,
+    snippet: chunk.payload.text,
+    attributes: {
+      source: chunk.payload.source,
+      ...(chunk.payload.sourceUrl ? { source_url: chunk.payload.sourceUrl } : {}),
+    },
   }));
 }
 
 export async function runRagChat({
-  client,
-  vectorStoreId,
+  openaiClient,
+  qdrantClient,
+  collectionName,
+  embeddingModel = DEFAULT_EMBEDDING_MODEL,
   messages,
   model = DEFAULT_RAG_MODEL,
   systemPrompt = DEFAULT_SYSTEM_PROMPT,
 }: {
-  client: OpenAI;
-  vectorStoreId: string;
+  openaiClient: OpenAI;
+  qdrantClient: QdrantClient;
+  collectionName: string;
+  embeddingModel?: string;
   messages: RagMessage[];
   model?: string;
   systemPrompt?: string;
 }): Promise<RagResult> {
-  const hasSystemMessage = messages.some((message) => message.role === "system");
-  const inputMessages = hasSystemMessage
-    ? messages
-    : [{ role: "system" as const, content: systemPrompt }, ...messages];
+  const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
+  const query = lastUserMessage?.content?.trim() ?? "";
 
-  const response = await client.responses.create({
+  const chunks = query
+    ? await retrieveRelevantChunks({
+        openaiClient,
+        qdrantClient,
+        collectionName,
+        query,
+        embeddingModel,
+      })
+    : [];
+
+  if (!chunks.length) {
+    return {
+      answer: "I cannot find that in the files.",
+      citations: [],
+      annotations: [],
+      warning:
+        "No files found or no relevant grounded results were retrieved for this question.",
+      responseId: `resp_${Date.now()}`,
+    };
+  }
+
+  const context = buildContextPrompt(chunks);
+  const conversationMessages = messages.filter((message) => message.role !== "system");
+
+  const response = await openaiClient.chat.completions.create({
     model,
-    input: toResponsesInput(inputMessages),
-    tools: [
+    temperature: 0,
+    messages: [
       {
-        type: "file_search",
-        vector_store_ids: [vectorStoreId],
-        max_num_results: 8,
-        ranking_options: {
-          ranker: "auto",
-          score_threshold: 0.15,
-        },
+        role: "system",
+        content: `${systemPrompt}\n\nNumbered context blocks:\n${context}`,
       },
+      ...conversationMessages,
     ],
-    include: ["file_search_call.results"],
   });
 
-  const answer = extractMessageText(response);
-  const citations = extractCitations(response);
-  const annotations = extractAnnotations(response);
+  const answer = response.choices[0]?.message?.content?.trim() ?? "";
+  const citations = chunksToCitations(chunks);
+  const annotations = buildAnnotations(answer, chunks);
   const warning =
-    !answer.trim() || citations.length === 0
+    !answer.trim() || annotations.length === 0
       ? "No files found or no relevant grounded results were retrieved for this question."
       : null;
 
