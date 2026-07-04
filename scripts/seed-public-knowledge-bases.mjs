@@ -2,10 +2,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import OpenAI from "openai";
-import { PrismaClient, ImportSource, SourceMode, KbVisibility } from "@prisma/client";
+import { QdrantClient } from "@qdrant/js-client-rest";
+import { PrismaClient, ImportSource, KbVisibility } from "@prisma/client";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
+
+const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
+const DEFAULT_EMBEDDING_DIMENSIONS = 1536;
+const DEFAULT_QDRANT_URL =
+  "https://728c3995-d04c-4506-97be-7f5c6698f34c.eu-central-1-0.aws.cloud.qdrant.io";
+const CHUNK_SIZE = 1200;
+const CHUNK_OVERLAP = 200;
 
 function loadEnv() {
   for (const file of [".env.local", ".env"]) {
@@ -49,16 +57,70 @@ function getExtension(filename) {
   return extension || "";
 }
 
-const SUPPORTED_EXTENSIONS = new Set([
-  "pdf",
-  "doc",
-  "docx",
-  "txt",
-  "md",
-  "html",
-  "csv",
-  "json",
-]);
+function normalizeWhitespace(text) {
+  return text.replace(/\r\n/g, "\n").replace(/\t/g, " ").replace(/ +/g, " ").trim();
+}
+
+function chunkText(text) {
+  const normalized = normalizeWhitespace(text);
+  if (!normalized) return [];
+
+  const chunks = [];
+  let start = 0;
+  let chunkIndex = 0;
+
+  while (start < normalized.length) {
+    const end = Math.min(start + CHUNK_SIZE, normalized.length);
+    const slice = normalized.slice(start, end).trim();
+    if (slice) {
+      chunks.push({ text: slice, chunkIndex });
+      chunkIndex += 1;
+    }
+    if (end >= normalized.length) break;
+    start = Math.max(end - CHUNK_OVERLAP, start + 1);
+  }
+
+  return chunks;
+}
+
+function buildCollectionName(knowledgeBaseId) {
+  return `kb_${knowledgeBaseId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+}
+
+async function ensureCollection(client, collectionName) {
+  const collections = await client.getCollections();
+  const exists = collections.collections.some((collection) => collection.name === collectionName);
+  if (exists) return;
+
+  await client.createCollection(collectionName, {
+    vectors: {
+      size: DEFAULT_EMBEDDING_DIMENSIONS,
+      distance: "Cosine",
+    },
+  });
+}
+
+async function embedTexts(openaiClient, texts) {
+  const response = await openaiClient.embeddings.create({
+    model: DEFAULT_EMBEDDING_MODEL,
+    input: texts,
+    dimensions: DEFAULT_EMBEDDING_DIMENSIONS,
+  });
+  return response.data.map((item) => item.embedding);
+}
+
+async function parsePdf(buffer) {
+  const { PDFParse } = await import("pdf-parse");
+  const parser = new PDFParse({ data: buffer });
+  try {
+    const result = await parser.getText();
+    return normalizeWhitespace(result.text || "");
+  } finally {
+    await parser.destroy();
+  }
+}
+
+const SUPPORTED_EXTENSIONS = new Set(["pdf", "txt", "md", "html", "csv", "json"]);
 
 async function downloadRemoteFile(url, fallbackFilename) {
   const response = await fetch(url, {
@@ -97,7 +159,74 @@ async function downloadRemoteFile(url, fallbackFilename) {
   }
 
   const contentType = response.headers.get("content-type") || "application/pdf";
-  return new File([buffer], usableName, { type: contentType });
+  return {
+    filename: usableName,
+    mimeType: contentType,
+    buffer,
+  };
+}
+
+async function ingestFile({
+  openaiClient,
+  qdrantClient,
+  prisma,
+  knowledgeBase,
+  filename,
+  mimeType,
+  buffer,
+  sourceUrl,
+}) {
+  const text = await parsePdf(buffer);
+  const chunks = chunkText(text);
+  if (!chunks.length) {
+    throw new Error(`No indexable text found in ${filename}`);
+  }
+
+  const vectors = await embedTexts(
+    openaiClient,
+    chunks.map((chunk) => chunk.text),
+  );
+
+  const knowledgeFile = await prisma.knowledgeFile.create({
+    data: {
+      knowledgeBaseId: knowledgeBase.id,
+      originalName: filename,
+      importSource: ImportSource.WEB,
+      sourceUrl,
+      status: "IN_PROGRESS",
+      bytes: buffer.length,
+      mimeType,
+      attributesJson: JSON.stringify({
+        source: ImportSource.WEB.toLowerCase(),
+        source_url: sourceUrl.slice(0, 512),
+      }),
+    },
+  });
+
+  await qdrantClient.upsert(knowledgeBase.qdrantCollectionName, {
+    wait: true,
+    points: chunks.map((chunk, index) => ({
+      id: crypto.randomUUID(),
+      vector: vectors[index],
+      payload: {
+        knowledgeBaseId: knowledgeBase.id,
+        fileId: knowledgeFile.id,
+        filename,
+        chunkIndex: chunk.chunkIndex,
+        text: chunk.text,
+        source: ImportSource.WEB.toLowerCase(),
+        sourceUrl,
+      },
+    })),
+  });
+
+  await prisma.knowledgeFile.update({
+    where: { id: knowledgeFile.id },
+    data: {
+      status: "COMPLETED",
+      chunkCount: chunks.length,
+    },
+  });
 }
 
 const PUBLIC_KNOWLEDGE_BASES = [
@@ -118,9 +247,6 @@ const PUBLIC_KNOWLEDGE_BASES = [
         url: "https://pmc.ncbi.nlm.nih.gov/articles/PMC2010938/pdf/",
         title: "WHO handbook for reporting results of cancer treatment",
       },
-    ],
-    searches: [
-      { query: "cancer clinical trials reporting PDF", preset: "pmc" },
     ],
   },
   {
@@ -145,7 +271,6 @@ const PUBLIC_KNOWLEDGE_BASES = [
         title: "Unruptured intracranial aneurysms review",
       },
     ],
-    searches: [{ query: "intracranial aneurysm guidelines PDF", preset: "pmc" }],
   },
   {
     name: "Clinical Trials: Stroke",
@@ -165,7 +290,6 @@ const PUBLIC_KNOWLEDGE_BASES = [
         title: "Mechanical thrombectomy in late-presenting LVO stroke",
       },
     ],
-    searches: [{ query: "stroke clinical trials enrollment PDF", preset: "pmc" }],
   },
   {
     name: "Ayurvedic Primary Care",
@@ -189,11 +313,10 @@ const PUBLIC_KNOWLEDGE_BASES = [
         title: "National essential diagnostics list with Ayushman Bharat primary care context",
       },
     ],
-    searches: [{ query: "ayurveda primary health care PDF", preset: "india" }],
   },
 ];
 
-async function createKnowledgeBase(client, prisma, name, description) {
+async function createKnowledgeBase(prisma, qdrantClient, name, description) {
   const existing = await prisma.knowledgeBase.findFirst({
     where: { name },
   });
@@ -209,24 +332,26 @@ async function createKnowledgeBase(client, prisma, name, description) {
     return existing;
   }
 
-  const vectorStore = await client.vectorStores.create({
-    name,
-    metadata: description ? { description } : undefined,
-  });
-
   const kb = await prisma.knowledgeBase.create({
     data: {
       name,
       description,
-      vectorStoreId: vectorStore.id,
-      sourceMode: SourceMode.CREATED,
+      qdrantCollectionName: `kb_pending_${Date.now()}`,
       visibility: KbVisibility.PUBLIC,
       ownerId: null,
     },
   });
 
-  console.log(`  Created KB: ${name} (${kb.id})`);
-  return kb;
+  const collectionName = buildCollectionName(kb.id);
+  await ensureCollection(qdrantClient, collectionName);
+
+  const updated = await prisma.knowledgeBase.update({
+    where: { id: kb.id },
+    data: { qdrantCollectionName: collectionName },
+  });
+
+  console.log(`  Created KB: ${name} (${updated.id})`);
+  return updated;
 }
 
 async function findExistingByUrl(prisma, knowledgeBaseId, sourceUrl) {
@@ -244,7 +369,13 @@ async function findExistingByUrl(prisma, knowledgeBaseId, sourceUrl) {
   );
 }
 
-async function addUrlToKnowledgeBase({ client, prisma, knowledgeBase, source }) {
+async function addUrlToKnowledgeBase({
+  openaiClient,
+  qdrantClient,
+  prisma,
+  knowledgeBase,
+  source,
+}) {
   const existing = await findExistingByUrl(prisma, knowledgeBase.id, source.url);
   if (existing) {
     console.log(`    Skip (already indexed): ${source.title}`);
@@ -252,61 +383,23 @@ async function addUrlToKnowledgeBase({ client, prisma, knowledgeBase, source }) 
   }
 
   console.log(`    Adding: ${source.title}`);
-  const file = await downloadRemoteFile(source.url, source.title.replace(/[^\w.-]+/g, "_") + ".pdf");
+  const file = await downloadRemoteFile(
+    source.url,
+    source.title.replace(/[^\w.-]+/g, "_") + ".pdf",
+  );
 
-  const uploaded = await client.files.create({
-    file,
-    purpose: "assistants",
+  await ingestFile({
+    openaiClient,
+    qdrantClient,
+    prisma,
+    knowledgeBase,
+    filename: file.filename,
+    mimeType: file.mimeType,
+    buffer: file.buffer,
+    sourceUrl: source.url,
   });
 
-  const attributes = {
-    source: ImportSource.WEB.toLowerCase(),
-    source_url: source.url.slice(0, 512),
-  };
-
-  const vectorFile = await client.vectorStores.files.createAndPoll(knowledgeBase.vectorStoreId, {
-    file_id: uploaded.id,
-    attributes,
-  });
-
-  await prisma.knowledgeFile.upsert({
-    where: { openaiFileId: uploaded.id },
-    update: {
-      knowledgeBaseId: knowledgeBase.id,
-      vectorStoreFileId: vectorFile.id,
-      originalName: file.name,
-      importSource: ImportSource.WEB,
-      sourceUrl: source.url,
-      status:
-        vectorFile.status === "completed"
-          ? "COMPLETED"
-          : vectorFile.status === "failed"
-            ? "FAILED"
-            : "IN_PROGRESS",
-      bytes: file.size,
-      mimeType: file.type,
-      attributesJson: JSON.stringify(attributes),
-    },
-    create: {
-      knowledgeBaseId: knowledgeBase.id,
-      openaiFileId: uploaded.id,
-      vectorStoreFileId: vectorFile.id,
-      originalName: file.name,
-      importSource: ImportSource.WEB,
-      sourceUrl: source.url,
-      status:
-        vectorFile.status === "completed"
-          ? "COMPLETED"
-          : vectorFile.status === "failed"
-            ? "FAILED"
-            : "IN_PROGRESS",
-      bytes: file.size,
-      mimeType: file.type,
-      attributesJson: JSON.stringify(attributes),
-    },
-  });
-
-  return { skipped: false, status: vectorFile.status };
+  return { skipped: false };
 }
 
 async function main() {
@@ -316,8 +409,15 @@ async function main() {
     throw new Error("OPENAI_API_KEY is required to seed public knowledge bases.");
   }
 
+  const qdrantUrl = process.env.QDRANT_URL?.trim() || DEFAULT_QDRANT_URL;
+  const qdrantApiKey = process.env.QDRANT_API_KEY?.trim() || undefined;
+
   const prisma = new PrismaClient();
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const qdrantClient = new QdrantClient({
+    url: qdrantUrl,
+    apiKey: qdrantApiKey,
+  });
 
   console.log("Seeding public knowledge bases...\n");
 
@@ -326,8 +426,8 @@ async function main() {
   for (const spec of PUBLIC_KNOWLEDGE_BASES) {
     console.log(`\n== ${spec.name} ==`);
     const knowledgeBase = await createKnowledgeBase(
-      client,
       prisma,
+      qdrantClient,
       spec.name,
       spec.description,
     );
@@ -339,7 +439,8 @@ async function main() {
     for (const source of spec.urls) {
       try {
         const result = await addUrlToKnowledgeBase({
-          client,
+          openaiClient,
+          qdrantClient,
           prisma,
           knowledgeBase,
           source,
@@ -356,7 +457,7 @@ async function main() {
     summary.push({
       name: spec.name,
       id: knowledgeBase.id,
-      vectorStoreId: knowledgeBase.vectorStoreId,
+      collectionName: knowledgeBase.qdrantCollectionName,
       added,
       skipped,
       failed,
@@ -366,7 +467,7 @@ async function main() {
   console.log("\n\nSeed summary:");
   for (const item of summary) {
     console.log(
-      `- ${item.name}\n  kb_id: ${item.id}\n  vs_id: ${item.vectorStoreId}\n  added: ${item.added}, skipped: ${item.skipped}, failed: ${item.failed}`,
+      `- ${item.name}\n  kb_id: ${item.id}\n  collection: ${item.collectionName}\n  added: ${item.added}, skipped: ${item.skipped}, failed: ${item.failed}`,
     );
   }
 

@@ -54,3 +54,29 @@ export async function enforceFallbackRateLimit({
     );
   }
 }
+
+export async function enforceWebSearchRateLimit({
+  prisma,
+  sessionId,
+}: {
+  prisma: PrismaClient;
+  sessionId: string;
+}) {
+  const since = new Date(Date.now() - 60 * 1000);
+  const count = await prisma.usageEvent.count({
+    where: {
+      sessionId,
+      eventType: UsageEventType.WEB_SEARCH,
+      createdAt: {
+        gte: since,
+      },
+    },
+  });
+
+  if (count >= 1) {
+    throw new ApiError(
+      429,
+      "Web search is limited to 1 request per minute per session.",
+    );
+  }
+}

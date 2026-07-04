@@ -1,6 +1,8 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { ApiError } from "@/lib/api";
+import type { SessionState } from "@/lib/session";
+import { applySessionCookie } from "@/lib/session";
 
 export class OpenAICompatError extends Error {
   status: number;
@@ -15,23 +17,25 @@ export class OpenAICompatError extends Error {
   }
 }
 
+export type CompatKeyMode = "user" | "fallback";
+
 export function getApiKeyFromCompatRequest(request: NextRequest) {
   const authHeader = request.headers.get("authorization")?.trim();
   if (authHeader?.toLowerCase().startsWith("bearer ")) {
     const bearerKey = authHeader.slice(7).trim();
     if (bearerKey) {
-      return bearerKey;
+      return { apiKey: bearerKey, keyMode: "user" as const };
     }
   }
 
   const headerKey = request.headers.get("x-openai-api-key")?.trim();
   if (headerKey) {
-    return headerKey;
+    return { apiKey: headerKey, keyMode: "user" as const };
   }
 
   const fallbackKey = process.env.OPENAI_API_KEY?.trim();
   if (fallbackKey) {
-    return fallbackKey;
+    return { apiKey: fallbackKey, keyMode: "fallback" as const };
   }
 
   throw new OpenAICompatError(
@@ -60,9 +64,20 @@ export function resolveKnowledgeBaseId(request: NextRequest, model?: string) {
   );
 }
 
-export function openAICompatErrorResponse(error: unknown) {
+export function openAICompatErrorResponse(
+  error: unknown,
+  sessionState?: SessionState,
+) {
+  const respond = (body: unknown, init?: ResponseInit) => {
+    const response = NextResponse.json(body, init);
+    if (sessionState) {
+      return applySessionCookie(response, sessionState);
+    }
+    return response;
+  };
+
   if (error instanceof OpenAICompatError) {
-    return NextResponse.json(
+    return respond(
       {
         error: {
           message: error.message,
@@ -75,12 +90,13 @@ export function openAICompatErrorResponse(error: unknown) {
   }
 
   if (error instanceof ApiError) {
-    return NextResponse.json(
+    const isRateLimit = error.status === 429;
+    return respond(
       {
         error: {
           message: error.message,
-          type: "invalid_request_error",
-          code: "invalid_request",
+          type: isRateLimit ? "rate_limit_error" : "invalid_request_error",
+          code: isRateLimit ? "rate_limit_exceeded" : "invalid_request",
         },
       },
       { status: error.status },
@@ -88,7 +104,7 @@ export function openAICompatErrorResponse(error: unknown) {
   }
 
   console.error(error);
-  return NextResponse.json(
+  return respond(
     {
       error: {
         message: "Something went wrong while processing the request.",

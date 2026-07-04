@@ -1,9 +1,6 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
-const isProtectedApiRoute = createRouteMatcher([
-  "/api/knowledge-bases/create",
-  "/api/knowledge-bases/attach",
-]);
+const isProtectedApiRoute = createRouteMatcher(["/api/knowledge-bases/create"]);
 
 export default clerkMiddleware(async (auth, req) => {
   if (isProtectedApiRoute(req)) {

@@ -1,16 +1,21 @@
+import { KeyMode, UsageEventType } from "@prisma/client";
 import OpenAI from "openai";
 import { z } from "zod";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getAuthContext, requireReadKb } from "@/lib/kb-access";
-import { requireKnowledgeBase } from "@/lib/knowledge-base";
+import { recordUsageEvent, requireKnowledgeBase } from "@/lib/knowledge-base";
+import { resolveCompatRagCredentials } from "@/lib/credentials";
+import { createQdrantClient } from "@/lib/qdrant";
 import {
-  getApiKeyFromCompatRequest,
   openAICompatErrorResponse,
   OpenAICompatError,
   resolveKnowledgeBaseId,
 } from "@/lib/openai-compat";
+import { prisma } from "@/lib/prisma";
+import { enforceFallbackRateLimit } from "@/lib/rate-limit";
 import { DEFAULT_RAG_MODEL, runRagChat, toChatCompletionResponse } from "@/lib/rag";
+import { applySessionCookie, getSessionState } from "@/lib/session";
 
 const messageSchema = z.object({
   role: z.enum(["system", "user", "assistant"]),
@@ -25,6 +30,8 @@ const schema = z.object({
 });
 
 export async function POST(request: NextRequest) {
+  const sessionState = getSessionState(request);
+
   try {
     const payload = schema.parse(await request.json());
 
@@ -45,23 +52,47 @@ export async function POST(request: NextRequest) {
       requireReadKb(knowledgeBase, authContext);
     }
 
-    const apiKey = getApiKeyFromCompatRequest(request);
-    const client = new OpenAI({ apiKey });
+    const credentials = resolveCompatRagCredentials(request, knowledgeBase);
+
+    if (credentials.keyMode === "fallback") {
+      await enforceFallbackRateLimit({
+        prisma,
+        sessionId: sessionState.sessionId,
+        eventType: UsageEventType.CHAT,
+      });
+    }
+
+    const openaiClient = new OpenAI({ apiKey: credentials.openaiApiKey });
+    const qdrantClient = createQdrantClient(
+      credentials.qdrantUrl,
+      credentials.qdrantApiKey,
+    );
 
     const result = await runRagChat({
-      client,
-      vectorStoreId: knowledgeBase.vectorStoreId,
+      openaiClient,
+      qdrantClient,
+      collectionName: knowledgeBase.qdrantCollectionName,
+      embeddingModel: knowledgeBase.embeddingModel,
       messages: payload.messages,
       model: payload.model.startsWith("kb_") ? DEFAULT_RAG_MODEL : payload.model,
     });
 
-    return NextResponse.json(
+    await recordUsageEvent({
+      sessionId: sessionState.sessionId,
+      eventType: UsageEventType.CHAT,
+      keyMode: credentials.keyMode === "user" ? KeyMode.USER : KeyMode.FALLBACK,
+      knowledgeBaseId: knowledgeBase.id,
+    });
+
+    const response = NextResponse.json(
       toChatCompletionResponse({
         model: payload.model,
         result,
       }),
     );
+
+    return applySessionCookie(response, sessionState);
   } catch (error) {
-    return openAICompatErrorResponse(error);
+    return openAICompatErrorResponse(error, sessionState);
   }
 }

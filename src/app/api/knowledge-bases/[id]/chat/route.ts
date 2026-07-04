@@ -4,7 +4,7 @@ import type { NextRequest } from "next/server";
 import { errorResponse, jsonWithSession } from "@/lib/api";
 import { getAuthContext, requireReadableKnowledgeBase } from "@/lib/kb-access";
 import { recordUsageEvent } from "@/lib/knowledge-base";
-import { getOpenAIForRequest } from "@/lib/openai-server";
+import { getRagClients } from "@/lib/credentials";
 import { prisma } from "@/lib/prisma";
 import { runRagChat } from "@/lib/rag";
 import { enforceFallbackRateLimit } from "@/lib/rate-limit";
@@ -24,10 +24,12 @@ export async function POST(
     const { id } = await context.params;
     const authContext = await getAuthContext();
     const knowledgeBase = await requireReadableKnowledgeBase(id, authContext);
-    const { client, keyMode } = getOpenAIForRequest(request);
+    const { openai, qdrant, credentials } = getRagClients(request, {
+      knowledgeBase,
+    });
     const payload = schema.parse(await request.json());
 
-    if (keyMode === "fallback") {
+    if (credentials.keyMode === "fallback") {
       await enforceFallbackRateLimit({
         prisma,
         sessionId: sessionState.sessionId,
@@ -36,15 +38,17 @@ export async function POST(
     }
 
     const result = await runRagChat({
-      client,
-      vectorStoreId: knowledgeBase.vectorStoreId,
+      openaiClient: openai,
+      qdrantClient: qdrant,
+      collectionName: knowledgeBase.qdrantCollectionName,
+      embeddingModel: knowledgeBase.embeddingModel,
       messages: [{ role: "user", content: payload.question }],
     });
 
     await recordUsageEvent({
       sessionId: sessionState.sessionId,
       eventType: UsageEventType.CHAT,
-      keyMode: keyMode === "user" ? KeyMode.USER : KeyMode.FALLBACK,
+      keyMode: credentials.keyMode === "user" ? KeyMode.USER : KeyMode.FALLBACK,
       knowledgeBaseId: knowledgeBase.id,
     });
 

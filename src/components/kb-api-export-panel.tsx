@@ -64,7 +64,7 @@ export function KbApiExportPanel({ kbId, baseUrl, onCopied }: KbApiExportPanelPr
         <div>
           <h3 className="text-xs font-semibold text-foreground">Get responses</h3>
           <p className="mt-1 text-[11px] text-slate-500 leading-relaxed">
-            Query this knowledge base with an OpenAI-compatible chat completions request.
+            Query this knowledge base with an OpenAI-compatible chat completions request backed by Qdrant retrieval.
           </p>
         </div>
 
@@ -85,6 +85,10 @@ export function KbApiExportPanel({ kbId, baseUrl, onCopied }: KbApiExportPanelPr
             </li>
             <li>
               <span className="font-mono text-slate-400">x-knowledge-base-id: {kbId}</span>
+            </li>
+            <li>
+              <span className="font-mono text-slate-400">x-qdrant-url</span> and{" "}
+              <span className="font-mono text-slate-400">x-qdrant-api-key</span> for private KBs
             </li>
           </ul>
         </div>

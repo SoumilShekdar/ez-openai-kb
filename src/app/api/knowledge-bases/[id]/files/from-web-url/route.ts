@@ -2,9 +2,10 @@ import { ImportSource, KeyMode, UsageEventType } from "@prisma/client";
 import { z } from "zod";
 import type { NextRequest } from "next/server";
 import { errorResponse, jsonWithSession } from "@/lib/api";
-import { buildVectorFileAttributes, findExistingKnowledgeFileBySourceUrl, recordUsageEvent, saveKnowledgeFile } from "@/lib/knowledge-base";
+import { findExistingKnowledgeFileBySourceUrl, recordUsageEvent } from "@/lib/knowledge-base";
 import { getAuthContext, requireWritableKnowledgeBase } from "@/lib/kb-access";
-import { getOpenAIForRequest } from "@/lib/openai-server";
+import { getRagClients } from "@/lib/credentials";
+import { ingestKnowledgeFile } from "@/lib/ingest";
 import { prisma } from "@/lib/prisma";
 import { enforceFallbackRateLimit } from "@/lib/rate-limit";
 import { downloadRemoteFile } from "@/lib/remote-file";
@@ -24,9 +25,11 @@ export async function POST(
     const { id } = await context.params;
     const authContext = await getAuthContext();
     const knowledgeBase = await requireWritableKnowledgeBase(id, authContext);
-    const { client, keyMode } = getOpenAIForRequest(request);
+    const { openai, qdrant, credentials } = getRagClients(request, {
+      knowledgeBase,
+    });
 
-    if (keyMode === "fallback") {
+    if (credentials.keyMode === "fallback") {
       await enforceFallbackRateLimit({
         prisma,
         sessionId: sessionState.sessionId,
@@ -48,47 +51,25 @@ export async function POST(
     }
 
     const file = await downloadRemoteFile(payload.url);
+    const buffer = Buffer.from(await file.arrayBuffer());
 
-    const uploaded = await client.files.create({
-      file,
-      purpose: "assistants",
-    });
-
-    const attributes = buildVectorFileAttributes({
-      source: ImportSource.WEB,
-      sourceUrl: payload.url,
-    });
-
-    const vectorFile = await client.vectorStores.files.createAndPoll(
-      knowledgeBase.vectorStoreId,
-      {
-        file_id: uploaded.id,
-        attributes,
-      },
-    );
-
-    const knowledgeFile = await saveKnowledgeFile({
+    const knowledgeFile = await ingestKnowledgeFile({
+      openaiClient: openai,
+      qdrantClient: qdrant,
       knowledgeBaseId: knowledgeBase.id,
-      openaiFileId: uploaded.id,
-      vectorStoreFileId: vectorFile.id,
-      originalName: file.name,
+      collectionName: knowledgeBase.qdrantCollectionName,
+      embeddingModel: knowledgeBase.embeddingModel,
+      filename: file.name,
+      mimeType: file.type,
+      buffer,
       importSource: ImportSource.WEB,
       sourceUrl: payload.url,
-      status:
-        vectorFile.status === "completed"
-          ? "COMPLETED"
-          : vectorFile.status === "failed"
-            ? "FAILED"
-            : "IN_PROGRESS",
-      bytes: file.size,
-      mimeType: file.type,
-      attributes,
     });
 
     await recordUsageEvent({
       sessionId: sessionState.sessionId,
       eventType: UsageEventType.FILE_ADD,
-      keyMode: keyMode === "user" ? KeyMode.USER : KeyMode.FALLBACK,
+      keyMode: credentials.keyMode === "user" ? KeyMode.USER : KeyMode.FALLBACK,
       knowledgeBaseId: knowledgeBase.id,
     });
 
