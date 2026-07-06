@@ -16,33 +16,38 @@ const PRODUCTION_REQUIRED_ENV_VARS = [
   "CLERK_SECRET_KEY",
   "DATABASE_URL",
   "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
-  "NEXT_PUBLIC_CLERK_SIGN_IN_URL",
-  "NEXT_PUBLIC_CLERK_SIGN_UP_URL",
 ] as const;
+
+function readEnv(name: string) {
+  // Dynamic lookup so Next.js does not inline secrets at build time.
+  return process.env[name]?.trim();
+}
 
 function isProductionRuntime() {
   return (
+    typeof window === "undefined" &&
     process.env.NODE_ENV === "production" &&
     process.env.NEXT_PHASE !== "phase-production-build"
   );
 }
 
+let productionEnvValidated = false;
+
 function assertProductionEnv() {
-  if (!isProductionRuntime()) {
+  if (!isProductionRuntime() || productionEnvValidated) {
     return;
   }
 
-  const missing = PRODUCTION_REQUIRED_ENV_VARS.filter(
-    (key) => !process.env[key]?.trim(),
-  );
+  productionEnvValidated = true;
 
-  const sessionSecret = process.env.SESSION_SECRET?.trim();
+  const sessionSecret = readEnv("SESSION_SECRET");
   if (!sessionSecret || sessionSecret === DEV_SESSION_SECRET) {
     throw new Error(
-      "SESSION_SECRET must be set to a strong random value in production.",
+      "SESSION_SECRET must be set to a strong random value in production. Add it in Vercel → Settings → Environment Variables for Production and Preview, then redeploy.",
     );
   }
 
+  const missing = PRODUCTION_REQUIRED_ENV_VARS.filter((key) => !readEnv(key));
   if (missing.length > 0) {
     throw new Error(
       `Missing required production environment variables: ${missing.join(", ")}`,
@@ -50,19 +55,19 @@ function assertProductionEnv() {
   }
 }
 
-assertProductionEnv();
-
-export const SESSION_SECRET =
-  process.env.SESSION_SECRET?.trim() || DEV_SESSION_SECRET;
+export function getSessionSecret() {
+  assertProductionEnv();
+  return readEnv("SESSION_SECRET") || DEV_SESSION_SECRET;
+}
 
 export function getFallbackOpenAIKey() {
-  return process.env.OPENAI_API_KEY?.trim() || null;
+  return readEnv("OPENAI_API_KEY") || null;
 }
 
 export function getFallbackQdrantUrl() {
-  return process.env.QDRANT_URL?.trim() || DEFAULT_QDRANT_URL;
+  return readEnv("QDRANT_URL") || DEFAULT_QDRANT_URL;
 }
 
 export function getFallbackQdrantApiKey() {
-  return process.env.QDRANT_API_KEY?.trim() || null;
+  return readEnv("QDRANT_API_KEY") || null;
 }

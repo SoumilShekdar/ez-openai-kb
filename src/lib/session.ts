@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { NextRequest, NextResponse } from "next/server";
-import { SESSION_COOKIE_NAME, SESSION_SECRET } from "@/lib/env";
+import { getSessionSecret, SESSION_COOKIE_NAME } from "@/lib/env";
 
 export type SessionState = {
   sessionId: string;
@@ -9,7 +9,7 @@ export type SessionState = {
 };
 
 function signSessionId(sessionId: string) {
-  return createHmac("sha256", SESSION_SECRET).update(sessionId).digest("hex");
+  return createHmac("sha256", getSessionSecret()).update(sessionId).digest("hex");
 }
 
 function buildCookieValue(sessionId: string) {
