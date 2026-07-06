@@ -1,4 +1,4 @@
-import { DEFAULT_RAG_MODEL } from "@/lib/rag";
+const DEFAULT_RAG_MODEL = "gpt-4.1-mini";
 
 type ExampleParams = {
   baseUrl: string;
