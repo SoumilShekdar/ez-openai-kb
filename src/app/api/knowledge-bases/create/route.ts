@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
   try {
     const ownerId = await requireAuthenticatedUserId();
     const payload = schema.parse(await request.json());
-    const { openai, qdrant, credentials } = getRagClients(request, {
+    const { openai, qdrant, credentials } = await getRagClients(request, {
       knowledgeBase: { visibility: payload.visibility },
     });
 

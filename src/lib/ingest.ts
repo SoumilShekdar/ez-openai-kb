@@ -6,9 +6,112 @@ import { chunkText, parseDocument } from "@/lib/chunking";
 import {
   buildFileAttributes,
   indexParsedDocument,
+  removeKnowledgeFileVectors,
   saveKnowledgeFile,
   updateKnowledgeFileStatus,
 } from "@/lib/knowledge-base";
+import { prisma } from "@/lib/prisma";
+
+type IngestionInput = {
+  knowledgeBaseId: string;
+  filename: string;
+  mimeType?: string | null;
+  buffer: Buffer;
+  importSource: ImportSource;
+  sourceUrl?: string | null;
+};
+
+export async function enqueueIngestionJob(input: IngestionInput) {
+  const attributes = buildFileAttributes({
+    source: input.importSource,
+    sourceUrl: input.sourceUrl,
+  });
+  const knowledgeFile = await saveKnowledgeFile({
+    knowledgeBaseId: input.knowledgeBaseId,
+    originalName: input.filename,
+    importSource: input.importSource,
+    sourceUrl: input.sourceUrl,
+    status: "PENDING",
+    bytes: input.buffer.length,
+    mimeType: input.mimeType,
+    attributes,
+  });
+
+  const job = await prisma.ingestionJob.create({
+    data: {
+      knowledgeBaseId: input.knowledgeBaseId,
+      knowledgeFileId: knowledgeFile.id,
+      importSource: input.importSource,
+      sourceUrl: input.sourceUrl ?? null,
+      payload: input.buffer,
+    },
+  });
+
+  return { knowledgeFile, jobId: job.id };
+}
+
+export async function processIngestionJob({
+  jobId,
+  openaiClient,
+  qdrantClient,
+  collectionName,
+  embeddingModel,
+}: {
+  jobId: string;
+  openaiClient: OpenAI;
+  qdrantClient: QdrantClient;
+  collectionName: string;
+  embeddingModel: string;
+}) {
+  const staleBefore = new Date(Date.now() - 10 * 60 * 1000);
+  const claimed = await prisma.ingestionJob.updateMany({
+    where: {
+      id: jobId,
+      OR: [
+        { status: "PENDING" },
+        { status: "IN_PROGRESS", updatedAt: { lt: staleBefore } },
+      ],
+    },
+    data: { status: "IN_PROGRESS", attempts: { increment: 1 }, lastError: null },
+  });
+  if (!claimed.count) return;
+
+  const job = await prisma.ingestionJob.findUniqueOrThrow({
+    where: { id: jobId },
+    include: { knowledgeFile: true },
+  });
+  await updateKnowledgeFileStatus(job.knowledgeFileId, { status: "IN_PROGRESS" });
+
+  try {
+    const parsed = await parseDocument(job.knowledgeFile.originalName, job.knowledgeFile.mimeType, Buffer.from(job.payload));
+    // A retry can follow a timeout after vectors were written but before the
+    // database status was saved. Removing prior chunks keeps retries idempotent.
+    await removeKnowledgeFileVectors({ qdrantClient, collectionName, fileId: job.knowledgeFileId });
+    const chunkCount = await indexParsedDocument({
+      openaiClient,
+      qdrantClient,
+      knowledgeBaseId: job.knowledgeBaseId,
+      collectionName,
+      fileId: job.knowledgeFileId,
+      filename: job.knowledgeFile.originalName,
+      importSource: job.importSource,
+      sourceUrl: job.sourceUrl,
+      text: parsed.text,
+      embeddingModel,
+    });
+    await prisma.$transaction([
+      prisma.knowledgeFile.update({ where: { id: job.knowledgeFileId }, data: { status: "COMPLETED", chunkCount } }),
+      prisma.ingestionJob.update({ where: { id: jobId }, data: { status: "COMPLETED", payload: Buffer.alloc(0) } }),
+    ]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 1000) : "Ingestion failed.";
+    await prisma.$transaction([
+      prisma.knowledgeFile.update({ where: { id: job.knowledgeFileId }, data: { status: "FAILED" } }),
+      prisma.ingestionJob.update({ where: { id: jobId }, data: { status: "FAILED", lastError: message } }),
+    ]);
+    throw error;
+  }
+}
 
 export async function ingestKnowledgeFile({
   openaiClient,

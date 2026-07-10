@@ -78,8 +78,14 @@ When upgrading an existing database, knowledge bases matching the four seeded pu
 - Users can paste their own OpenAI key in the app UI. It is stored only in `sessionStorage`.
 - If no user key is present, the app falls back to `OPENAI_API_KEY` from the server environment.
 - Fallback-key usage is limited to:
-  - 1 search or chat request per minute per browser session
-  - 5 successful file additions per hour per browser session
+  - 3 search or chat requests per minute and 100 per day per signed-in user or client IP
+  - 3 file additions per hour and 10 per day per signed-in user or client IP
+- Limits are reserved before upstream work begins, including failed requests, to prevent retry-based cost abuse.
+- Web search is limited to 2 requests per minute and 30 per day per signed-in user or client IP.
+
+## Ingestion jobs
+
+Uploads and URL imports return as soon as the file has been accepted. Parsing, embeddings, and Qdrant writes continue after the response; the document list shows `PENDING`, `IN_PROGRESS`, `COMPLETED`, or `FAILED`. Pending work is resumed automatically while its owner has the workspace open. The queued payload is removed after a successful index.
 
 ## Database notes
 
@@ -92,6 +98,9 @@ When upgrading an existing database, knowledge bases matching the four seeded pu
 Set these environment variables in Vercel:
 
 - `OPENAI_API_KEY`
+- `QDRANT_URL`
+- `QDRANT_API_KEY`
+- `QDRANT_ALLOWED_HOSTS=<comma-separated approved Qdrant hosts>` when allowing browser-supplied Qdrant credentials
 - `SESSION_SECRET`
 - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
 - `CLERK_SECRET_KEY`
@@ -101,6 +110,8 @@ Set these environment variables in Vercel:
 - `DATABASE_URL=<your-postgres-connection-string>`
 
 The project is structured so the app code stays the same across local SQLite and deployed Postgres usage.
+
+Before deploying this version, apply the Prisma schema update (`npm run db:push` or your migration workflow). It adds durable rate-limit reservation fields and the ingestion-job table.
 
 ## Public knowledge base seed
 

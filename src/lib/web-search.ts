@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import { getExtension, isSupportedFile } from "@/lib/file-support";
+import { fetchWithSafeRedirects } from "@/lib/remote-file";
 
 const DOMAIN_PRESETS: Record<string, string[]> = {
   all: [],
@@ -29,16 +30,9 @@ function unwrapDuckDuckGoHref(href: string) {
 
 async function inspectCandidate(url: string) {
   try {
-    const headResponse = await fetch(url, {
-      method: "HEAD",
-      redirect: "follow",
-      headers: {
-        "user-agent": "Mozilla/5.0 KnowledgeBaseLab/1.0",
-      },
-      cache: "no-store",
-    });
+    const { response: headResponse, finalUrl: safeFinalUrl } = await fetchWithSafeRedirects(url, "HEAD");
 
-    const finalUrl = headResponse.url || url;
+    const finalUrl = safeFinalUrl || url;
     const contentType = headResponse.headers.get("content-type");
     return { finalUrl, contentType };
   } catch {

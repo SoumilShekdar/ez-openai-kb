@@ -6,7 +6,7 @@ import { getAuthContext, requireReadableKnowledgeBase } from "@/lib/kb-access";
 import { recordUsageEvent } from "@/lib/knowledge-base";
 import { getRagClients } from "@/lib/credentials";
 import { prisma } from "@/lib/prisma";
-import { enforceFallbackRateLimit } from "@/lib/rate-limit";
+import { enforceFallbackRateLimit, getRateLimitKey } from "@/lib/rate-limit";
 import { searchKnowledgeBase } from "@/lib/rag";
 import { getSessionState } from "@/lib/session";
 
@@ -24,7 +24,7 @@ export async function POST(
     const { id } = await context.params;
     const authContext = await getAuthContext();
     const knowledgeBase = await requireReadableKnowledgeBase(id, authContext);
-    const { openai, qdrant, credentials } = getRagClients(request, {
+    const { openai, qdrant, credentials } = await getRagClients(request, {
       knowledgeBase,
     });
     const payload = schema.parse(await request.json());
@@ -33,7 +33,9 @@ export async function POST(
       await enforceFallbackRateLimit({
         prisma,
         sessionId: sessionState.sessionId,
+        rateLimitKey: getRateLimitKey(request, authContext.userId, sessionState.sessionId),
         eventType: UsageEventType.SEARCH,
+        knowledgeBaseId: knowledgeBase.id,
       });
     }
 

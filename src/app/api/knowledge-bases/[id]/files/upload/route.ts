@@ -3,12 +3,13 @@ import type { NextRequest } from "next/server";
 import { recordUsageEvent } from "@/lib/knowledge-base";
 import { getAuthContext, requireWritableKnowledgeBase } from "@/lib/kb-access";
 import { getRagClients } from "@/lib/credentials";
-import { ingestFileObject } from "@/lib/ingest";
+import { enqueueIngestionJob } from "@/lib/ingest";
+import { scheduleIngestion } from "@/lib/ingestion-scheduler";
 import { getSessionState } from "@/lib/session";
 import { errorResponse, jsonWithSession, ApiError } from "@/lib/api";
 import { validateSupportedFile, MAX_UPLOAD_BYTES } from "@/lib/file-support";
 import { prisma } from "@/lib/prisma";
-import { enforceFallbackRateLimit } from "@/lib/rate-limit";
+import { enforceFallbackRateLimit, getRateLimitKey } from "@/lib/rate-limit";
 
 export async function POST(
   request: NextRequest,
@@ -20,7 +21,7 @@ export async function POST(
     const { id } = await context.params;
     const authContext = await getAuthContext();
     const knowledgeBase = await requireWritableKnowledgeBase(id, authContext);
-    const { openai, qdrant, credentials } = getRagClients(request, {
+    const { openai, qdrant, credentials } = await getRagClients(request, {
       knowledgeBase,
     });
 
@@ -28,7 +29,9 @@ export async function POST(
       await enforceFallbackRateLimit({
         prisma,
         sessionId: sessionState.sessionId,
+        rateLimitKey: getRateLimitKey(request, authContext.userId, sessionState.sessionId),
         eventType: UsageEventType.FILE_ADD,
+        knowledgeBaseId: knowledgeBase.id,
       });
     }
 
@@ -48,15 +51,14 @@ export async function POST(
       );
     }
 
-    const knowledgeFile = await ingestFileObject({
-      openaiClient: openai,
-      qdrantClient: qdrant,
+    const { knowledgeFile, jobId } = await enqueueIngestionJob({
       knowledgeBaseId: knowledgeBase.id,
-      collectionName: knowledgeBase.qdrantCollectionName,
-      embeddingModel: knowledgeBase.embeddingModel,
-      file,
+      filename: file.name,
+      mimeType: file.type,
+      buffer: Buffer.from(await file.arrayBuffer()),
       importSource: ImportSource.LOCAL,
     });
+    scheduleIngestion({ jobId, openaiClient: openai, qdrantClient: qdrant, collectionName: knowledgeBase.qdrantCollectionName, embeddingModel: knowledgeBase.embeddingModel });
 
     await recordUsageEvent({
       sessionId: sessionState.sessionId,
@@ -65,7 +67,7 @@ export async function POST(
       knowledgeBaseId: knowledgeBase.id,
     });
 
-    return jsonWithSession(sessionState, { knowledgeFile });
+    return jsonWithSession(sessionState, { knowledgeFile, queued: true });
   } catch (error) {
     return errorResponse(sessionState, error);
   }

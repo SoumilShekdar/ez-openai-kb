@@ -13,7 +13,7 @@ import {
   resolveKnowledgeBaseId,
 } from "@/lib/openai-compat";
 import { prisma } from "@/lib/prisma";
-import { enforceFallbackRateLimit } from "@/lib/rate-limit";
+import { enforceFallbackRateLimit, getRateLimitKey } from "@/lib/rate-limit";
 import { DEFAULT_RAG_MODEL, runRagChat, toChatCompletionResponse } from "@/lib/rag";
 import { applySessionCookie, getSessionState } from "@/lib/session";
 
@@ -52,13 +52,15 @@ export async function POST(request: NextRequest) {
       requireReadKb(knowledgeBase, authContext);
     }
 
-    const credentials = resolveCompatRagCredentials(request, knowledgeBase);
+    const credentials = await resolveCompatRagCredentials(request, knowledgeBase);
 
     if (credentials.keyMode === "fallback") {
       await enforceFallbackRateLimit({
         prisma,
         sessionId: sessionState.sessionId,
+        rateLimitKey: getRateLimitKey(request, authContext.userId, sessionState.sessionId),
         eventType: UsageEventType.CHAT,
+        knowledgeBaseId: knowledgeBase.id,
       });
     }
 
