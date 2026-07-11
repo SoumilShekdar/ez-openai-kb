@@ -19,19 +19,50 @@ export function getExtension(filename: string) {
   return extension || "";
 }
 
+export function normalizeMimeType(mimeType?: string | null) {
+  return mimeType?.split(";")[0]?.trim().toLowerCase() || null;
+}
+
+export function extensionFromMimeType(mimeType?: string | null) {
+  const mime = normalizeMimeType(mimeType);
+  if (!mime) {
+    return "";
+  }
+
+  const preferred: Record<string, string> = {
+    "application/csv": "csv",
+    "application/json": "json",
+    "application/pdf": "pdf",
+    "text/csv": "csv",
+    "text/html": "html",
+    "text/json": "json",
+    "text/markdown": "md",
+    "text/plain": "txt",
+    "text/x-markdown": "md",
+  };
+
+  return preferred[mime] ?? "";
+}
+
 export function isSupportedFile(filename: string, mimeType?: string | null) {
   const extension = getExtension(filename);
   const supportedTypes = SUPPORTED_FILE_TYPES[extension];
+  const mime = normalizeMimeType(mimeType);
 
-  if (!supportedTypes) {
+  if (supportedTypes) {
+    if (!mime) {
+      return true;
+    }
+
+    return supportedTypes.includes(mime) || mime.startsWith("text/");
+  }
+
+  // URLs often omit a file extension; allow by content type alone.
+  if (!mime) {
     return false;
   }
 
-  if (!mimeType) {
-    return true;
-  }
-
-  return supportedTypes.includes(mimeType.toLowerCase()) || mimeType.startsWith("text/");
+  return Object.values(SUPPORTED_FILE_TYPES).some((types) => types.includes(mime));
 }
 
 export function validateSupportedFile(filename: string, mimeType?: string | null) {
