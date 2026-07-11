@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
       requireReadKb(knowledgeBase, authContext);
     }
 
-    const credentials = resolveCompatRagCredentials(request, knowledgeBase);
+    const credentials = await resolveCompatRagCredentials(request, knowledgeBase);
 
     const openaiClient = new OpenAI({ apiKey: credentials.openaiApiKey });
     const qdrantClient = createQdrantClient(

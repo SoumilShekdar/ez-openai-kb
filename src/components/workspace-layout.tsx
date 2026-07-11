@@ -262,6 +262,9 @@ export function WorkspaceLayout({
 
     const interval = setInterval(async () => {
       try {
+        await apiRequest(`/api/knowledge-bases/${activeKb.id}/files/process-pending`, {
+          method: "POST",
+        });
         const response = await fetch(`/api/knowledge-bases/${activeKb.id}`);
         if (response.ok) {
           const data = await response.json();

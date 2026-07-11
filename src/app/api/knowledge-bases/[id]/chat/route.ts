@@ -22,7 +22,7 @@ export async function POST(
     const { id } = await context.params;
     const authContext = await getAuthContext();
     const knowledgeBase = await requireReadableKnowledgeBase(id, authContext);
-    const { openai, qdrant, credentials } = getRagClients(request, {
+    const { openai, qdrant, credentials } = await getRagClients(request, {
       knowledgeBase,
     });
     const payload = schema.parse(await request.json());

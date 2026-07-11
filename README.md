@@ -80,6 +80,10 @@ When upgrading an existing database, knowledge bases matching the four seeded pu
 - The app does not add its own fallback-key or web-discovery rate limits. Provider
   limits and quotas still apply.
 
+## Ingestion jobs
+
+Uploads and URL imports return as soon as the file has been accepted. Parsing, embeddings, and Qdrant writes continue after the response; the document list shows `PENDING`, `IN_PROGRESS`, `COMPLETED`, or `FAILED`. Pending work is resumed automatically while its owner has the workspace open. The queued payload is removed after a successful index.
+
 ## Database notes
 
 - Local development uses SQLite.
@@ -93,6 +97,7 @@ Set these environment variables in Vercel:
 - `OPENAI_API_KEY`
 - `QDRANT_URL`
 - `QDRANT_API_KEY`
+- `QDRANT_ALLOWED_HOSTS=<comma-separated approved Qdrant hosts>` when allowing browser-supplied Qdrant credentials
 - `SESSION_SECRET`
 - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
 - `CLERK_SECRET_KEY`
@@ -102,6 +107,8 @@ Set these environment variables in Vercel:
 - `DATABASE_URL=<your-postgres-connection-string>`
 
 The project is structured so the app code stays the same across local SQLite and deployed Postgres usage.
+
+Before deploying this version, apply the Prisma schema update (`npm run db:push` or your migration workflow). It adds the ingestion-job table used for queued uploads.
 
 ## Public knowledge base seed
 
