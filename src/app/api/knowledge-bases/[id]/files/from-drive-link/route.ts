@@ -7,8 +7,6 @@ import { findExistingKnowledgeFileBySourceUrl, recordUsageEvent } from "@/lib/kn
 import { getAuthContext, requireWritableKnowledgeBase } from "@/lib/kb-access";
 import { getRagClients } from "@/lib/credentials";
 import { ingestKnowledgeFile } from "@/lib/ingest";
-import { prisma } from "@/lib/prisma";
-import { enforceFallbackRateLimit } from "@/lib/rate-limit";
 import { downloadRemoteFile } from "@/lib/remote-file";
 import { getSessionState } from "@/lib/session";
 
@@ -29,14 +27,6 @@ export async function POST(
     const { openai, qdrant, credentials } = getRagClients(request, {
       knowledgeBase,
     });
-
-    if (credentials.keyMode === "fallback") {
-      await enforceFallbackRateLimit({
-        prisma,
-        sessionId: sessionState.sessionId,
-        eventType: UsageEventType.FILE_ADD,
-      });
-    }
 
     const payload = schema.parse(await request.json());
 

@@ -1,12 +1,10 @@
 import { KeyMode, UsageEventType } from "@prisma/client";
 import { z } from "zod";
 import type { NextRequest } from "next/server";
-import { ApiError, errorResponse, jsonWithSession } from "@/lib/api";
+import { errorResponse, jsonWithSession } from "@/lib/api";
 import { getAuthContext, requireReadableKnowledgeBase } from "@/lib/kb-access";
 import { recordUsageEvent } from "@/lib/knowledge-base";
 import { getRagClients } from "@/lib/credentials";
-import { prisma } from "@/lib/prisma";
-import { enforceFallbackRateLimit } from "@/lib/rate-limit";
 import { searchKnowledgeBase } from "@/lib/rag";
 import { getSessionState } from "@/lib/session";
 
@@ -29,14 +27,6 @@ export async function POST(
     });
     const payload = schema.parse(await request.json());
 
-    if (credentials.keyMode === "fallback") {
-      await enforceFallbackRateLimit({
-        prisma,
-        sessionId: sessionState.sessionId,
-        eventType: UsageEventType.SEARCH,
-      });
-    }
-
     const results = await searchKnowledgeBase({
       openaiClient: openai,
       qdrantClient: qdrant,
@@ -52,14 +42,12 @@ export async function POST(
       knowledgeBaseId: knowledgeBase.id,
     });
 
-    if (!results.length) {
-      throw new ApiError(
-        404,
-        "No files found or no relevant grounded results were retrieved for this question.",
-      );
-    }
-
-    return jsonWithSession(sessionState, { results });
+    return jsonWithSession(sessionState, {
+      results,
+      warning: results.length
+        ? null
+        : "No matching information was found in this knowledge base.",
+    });
   } catch (error) {
     return errorResponse(sessionState, error);
   }

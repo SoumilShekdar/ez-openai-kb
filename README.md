@@ -77,9 +77,8 @@ When upgrading an existing database, knowledge bases matching the four seeded pu
 
 - Users can paste their own OpenAI key in the app UI. It is stored only in `sessionStorage`.
 - If no user key is present, the app falls back to `OPENAI_API_KEY` from the server environment.
-- Fallback-key usage is limited to:
-  - 1 search or chat request per minute per browser session
-  - 5 successful file additions per hour per browser session
+- The app does not add its own fallback-key or web-discovery rate limits. Provider
+  limits and quotas still apply.
 
 ## Database notes
 
@@ -92,6 +91,8 @@ When upgrading an existing database, knowledge bases matching the four seeded pu
 Set these environment variables in Vercel:
 
 - `OPENAI_API_KEY`
+- `QDRANT_URL`
+- `QDRANT_API_KEY`
 - `SESSION_SECRET`
 - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
 - `CLERK_SECRET_KEY`

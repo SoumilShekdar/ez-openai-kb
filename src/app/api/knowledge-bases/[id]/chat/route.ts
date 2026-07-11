@@ -5,9 +5,7 @@ import { errorResponse, jsonWithSession } from "@/lib/api";
 import { getAuthContext, requireReadableKnowledgeBase } from "@/lib/kb-access";
 import { recordUsageEvent } from "@/lib/knowledge-base";
 import { getRagClients } from "@/lib/credentials";
-import { prisma } from "@/lib/prisma";
 import { runRagChat } from "@/lib/rag";
-import { enforceFallbackRateLimit } from "@/lib/rate-limit";
 import { getSessionState } from "@/lib/session";
 
 const schema = z.object({
@@ -28,14 +26,6 @@ export async function POST(
       knowledgeBase,
     });
     const payload = schema.parse(await request.json());
-
-    if (credentials.keyMode === "fallback") {
-      await enforceFallbackRateLimit({
-        prisma,
-        sessionId: sessionState.sessionId,
-        eventType: UsageEventType.CHAT,
-      });
-    }
 
     const result = await runRagChat({
       openaiClient: openai,

@@ -7,8 +7,6 @@ import { ingestFileObject } from "@/lib/ingest";
 import { getSessionState } from "@/lib/session";
 import { errorResponse, jsonWithSession, ApiError } from "@/lib/api";
 import { validateSupportedFile, MAX_UPLOAD_BYTES } from "@/lib/file-support";
-import { prisma } from "@/lib/prisma";
-import { enforceFallbackRateLimit } from "@/lib/rate-limit";
 
 export async function POST(
   request: NextRequest,
@@ -23,14 +21,6 @@ export async function POST(
     const { openai, qdrant, credentials } = getRagClients(request, {
       knowledgeBase,
     });
-
-    if (credentials.keyMode === "fallback") {
-      await enforceFallbackRateLimit({
-        prisma,
-        sessionId: sessionState.sessionId,
-        eventType: UsageEventType.FILE_ADD,
-      });
-    }
 
     const formData = await request.formData();
     const file = formData.get("file");

@@ -24,8 +24,8 @@ type SearchResult = {
 
 type ChatResult = {
   answer: string;
-  citations: Array<{ fileId: string; filename: string; index: number }>;
-  annotations?: Array<{ text: string; fileId: string; filename: string; index: number }>;
+  citations: Array<{ fileId: string; filename: string; index: number; sourceUrl?: string | null }>;
+  annotations?: Array<{ text: string; fileId: string; filename: string; index: number; sourceUrl?: string | null }>;
   warning: string | null;
 };
 
@@ -41,9 +41,10 @@ interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
-  citations?: Array<{ fileId: string; filename: string; index: number }>;
-  annotations?: Array<{ text: string; fileId: string; filename: string; index: number }>;
+  citations?: Array<{ fileId: string; filename: string; index: number; sourceUrl?: string | null }>;
+  annotations?: Array<{ text: string; fileId: string; filename: string; index: number; sourceUrl?: string | null }>;
   warning?: string | null;
+  sourceQuestion?: string;
   createdAt: Date;
 }
 
@@ -581,7 +582,7 @@ export function WorkspaceLayout({
     setRetrievalResults([]);
 
     try {
-      const res = await apiRequest<{ results: SearchResult[] }>(
+      const res = await apiRequest<{ results: SearchResult[]; warning?: string | null }>(
         `/api/knowledge-bases/${activeKb.id}/search`,
         {
           method: "POST",
@@ -590,9 +591,7 @@ export function WorkspaceLayout({
         },
       );
       setRetrievalResults(res.results);
-      if (res.results.length === 0) {
-        setRetrievalWarning("No matching chunks found for this query.");
-      }
+      setRetrievalWarning(res.warning ?? (res.results.length === 0 ? "No matching information was found in this knowledge base." : null));
     } catch (caughtError) {
       setRetrievalError(
         caughtError instanceof Error ? caughtError.message : "Vector search failed. Try again.",
@@ -673,8 +672,9 @@ export function WorkspaceLayout({
     }
   }
 
-  async function handleWebSearch() {
-    if (!webQuery.trim()) return;
+  async function handleWebSearch(query = webQuery) {
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery) return;
 
     setWebSearching(true);
     setWebSearchError(null);
@@ -689,7 +689,7 @@ export function WorkspaceLayout({
       const res = await apiRequest<{ candidates: Candidate[] }>("/api/web-files/search", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ query: webQuery, preset: webPreset }),
+        body: JSON.stringify({ query: normalizedQuery, preset: webPreset }),
       });
       setWebCandidates(res.candidates);
       if (res.candidates.length === 0) {
@@ -702,6 +702,16 @@ export function WorkspaceLayout({
     } finally {
       setWebSearching(false);
     }
+  }
+
+  function findSourcesFor(query: string) {
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery) return;
+    setRightTab("documents");
+    setAddDocExpanded(true);
+    setAddDocMethod("web");
+    setWebQuery(normalizedQuery);
+    void handleWebSearch(normalizedQuery);
   }
 
   function toggleCandidateSelection(url: string) {
@@ -817,6 +827,7 @@ export function WorkspaceLayout({
         citations: result.citations,
         annotations: result.annotations,
         warning: result.warning,
+        sourceQuestion: userQuestion,
         createdAt: new Date(),
       };
       setMessages((prev) => [...prev, assistantMsg]);
@@ -1250,7 +1261,14 @@ export function WorkspaceLayout({
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                           </svg>
                           <div>
-                            <span className="font-semibold">Ungrounded Answer:</span> No files were retrieved or searched from the knowledge base for this question.
+                            <span className="font-semibold">Not found in this knowledge base.</span> No grounded source was retrieved for this question.
+                            <button
+                              type="button"
+                              onClick={() => findSourcesFor(msg.sourceQuestion ?? "")}
+                              className="ml-2 font-semibold underline underline-offset-2 hover:text-amber-500"
+                            >
+                              Find possible sources
+                            </button>
                           </div>
                         </div>
                       )}
@@ -1942,6 +1960,16 @@ export function WorkspaceLayout({
                   {retrievalError && <PanelNotice tone="error">{retrievalError}</PanelNotice>}
 
                   {retrievalWarning && <PanelNotice tone="info">{retrievalWarning}</PanelNotice>}
+
+                  {retrievalWarning && (
+                    <button
+                      type="button"
+                      onClick={() => findSourcesFor(retrievalQuery)}
+                      className="w-full rounded-lg border border-accent-teal/30 bg-accent-teal/10 px-3 py-2 text-xs font-semibold text-accent-teal hover:bg-accent-teal/20"
+                    >
+                      Find possible sources on the web
+                    </button>
+                  )}
 
                   <div className="space-y-3">
                     {retrievalResults.map((r, i) => (

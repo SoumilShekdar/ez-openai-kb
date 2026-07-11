@@ -12,8 +12,6 @@ import {
   OpenAICompatError,
   resolveKnowledgeBaseId,
 } from "@/lib/openai-compat";
-import { prisma } from "@/lib/prisma";
-import { enforceFallbackRateLimit } from "@/lib/rate-limit";
 import { DEFAULT_RAG_MODEL, runRagChat, toChatCompletionResponse } from "@/lib/rag";
 import { applySessionCookie, getSessionState } from "@/lib/session";
 
@@ -53,14 +51,6 @@ export async function POST(request: NextRequest) {
     }
 
     const credentials = resolveCompatRagCredentials(request, knowledgeBase);
-
-    if (credentials.keyMode === "fallback") {
-      await enforceFallbackRateLimit({
-        prisma,
-        sessionId: sessionState.sessionId,
-        eventType: UsageEventType.CHAT,
-      });
-    }
 
     const openaiClient = new OpenAI({ apiKey: credentials.openaiApiKey });
     const qdrantClient = createQdrantClient(

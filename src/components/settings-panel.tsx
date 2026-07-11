@@ -48,8 +48,7 @@ export function SettingsPanel() {
 
       <p className="mt-4 text-sm leading-6 text-slate-600">
         Your personal key is stored only in this browser session. If left blank,
-        the app falls back to the server key and applies stricter search and file
-        upload limits.
+        the app uses the server-configured key.
       </p>
 
       <label className="mt-5 block text-sm font-medium text-slate-800">

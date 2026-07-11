@@ -27,6 +27,7 @@ export type RagCitation = {
   fileId: string;
   filename: string;
   index: number;
+  sourceUrl?: string | null;
 };
 
 export type RagAnnotation = {
@@ -34,6 +35,7 @@ export type RagAnnotation = {
   fileId: string;
   filename: string;
   index: number;
+  sourceUrl?: string | null;
 };
 
 export type RagMessage = {
@@ -65,14 +67,16 @@ function buildContextPrompt(chunks: RetrievedChunk[]) {
   return chunks.map((chunk, index) => buildContextBlock(chunk, index)).join("\n\n");
 }
 
-function chunksToCitations(chunks: RetrievedChunk[]): RagCitation[] {
+function chunksToCitations(chunks: RetrievedChunk[], indexes: number[]): RagCitation[] {
   const unique = new Map<string, RagCitation>();
 
-  chunks.forEach((chunk, index) => {
+  indexes.forEach((index) => {
+    const chunk = chunks[index];
     unique.set(`${chunk.payload.fileId}:${chunk.payload.filename}`, {
       fileId: chunk.payload.fileId,
       filename: chunk.payload.filename,
       index,
+      sourceUrl: chunk.payload.sourceUrl,
     });
   });
 
@@ -93,18 +97,15 @@ function extractUsedCitationIndexes(answer: string, maxIndex: number) {
   return indexes;
 }
 
-function buildAnnotations(answer: string, chunks: RetrievedChunk[]): RagAnnotation[] {
-  const usedIndexes = extractUsedCitationIndexes(answer, chunks.length);
-  const targetIndexes =
-    usedIndexes.size > 0 ? [...usedIndexes] : chunks.map((_, index) => index);
-
-  return targetIndexes.map((index) => {
+function buildAnnotations(answer: string, chunks: RetrievedChunk[], usedIndexes: number[]): RagAnnotation[] {
+  return usedIndexes.map((index) => {
     const chunk = chunks[index];
     return {
       text: `【${index + 1}†source】`,
       fileId: chunk.payload.fileId,
       filename: chunk.payload.filename,
       index,
+      sourceUrl: chunk.payload.sourceUrl,
     };
   });
 }
@@ -223,11 +224,12 @@ export async function runRagChat({
   });
 
   const answer = response.choices[0]?.message?.content?.trim() ?? "";
-  const citations = chunksToCitations(chunks);
-  const annotations = buildAnnotations(answer, chunks);
+  const usedIndexes = [...extractUsedCitationIndexes(answer, chunks.length)];
+  const citations = chunksToCitations(chunks, usedIndexes);
+  const annotations = buildAnnotations(answer, chunks, usedIndexes);
   const warning =
     !answer.trim() || annotations.length === 0
-      ? "No files found or no relevant grounded results were retrieved for this question."
+      ? "No grounded answer could be verified because the response did not include valid source citations."
       : null;
 
   return {

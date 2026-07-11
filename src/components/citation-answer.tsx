@@ -4,14 +4,15 @@ import React, { useMemo, useState } from "react";
 
 interface CitationAnswerProps {
   answer: string;
-  citations?: Array<{ fileId: string; filename: string; index: number }>;
-  annotations?: Array<{ text: string; fileId: string; filename: string; index: number }>;
+  citations?: Array<{ fileId: string; filename: string; index: number; sourceUrl?: string | null }>;
+  annotations?: Array<{ text: string; fileId: string; filename: string; index: number; sourceUrl?: string | null }>;
 }
 
 interface UniqueFile {
   fileId: string;
   filename: string;
   displayIndex: number;
+  sourceUrl?: string | null;
 }
 
 // Matches citation markers emitted by the model, e.g. 【1†source】 or 【1】.
@@ -84,6 +85,7 @@ export function CitationAnswer({
           fileId: annotation.fileId,
           filename: annotation.filename,
           displayIndex: nextIndex++,
+          sourceUrl: annotation.sourceUrl,
         };
         filesMap.set(key, fileInfo);
         list.push(fileInfo);
@@ -102,6 +104,7 @@ export function CitationAnswer({
             fileId: citation.fileId,
             filename: citation.filename,
             displayIndex: nextIndex++,
+            sourceUrl: citation.sourceUrl,
           };
           filesMap.set(key, fileInfo);
           list.push(fileInfo);
@@ -130,6 +133,7 @@ export function CitationAnswer({
         }`}
         onMouseEnter={() => setHoveredIndex(displayIndex)}
         onMouseLeave={() => setHoveredIndex(null)}
+        aria-label={`Citation ${displayIndex}: ${fileInfo?.filename ?? "source"}`}
         title={fileInfo?.filename ?? `Source ${displayIndex}`}
       >
         {displayIndex}
@@ -389,6 +393,17 @@ export function CitationAnswer({
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                   </svg>
                   <span className="truncate font-medium">{file.filename}</span>
+                  {file.sourceUrl && (
+                    <a
+                      href={file.sourceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="ml-auto shrink-0 rounded border border-border-theme px-1.5 py-0.5 text-[9px] font-semibold text-slate-500 hover:border-accent-teal hover:text-accent-teal"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      Open source
+                    </a>
+                  )}
                 </div>
               );
             })}
