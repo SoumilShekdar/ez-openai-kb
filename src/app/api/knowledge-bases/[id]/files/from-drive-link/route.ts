@@ -6,9 +6,8 @@ import { resolveGoogleDriveDownload } from "@/lib/drive";
 import { findExistingKnowledgeFileBySourceUrl, recordUsageEvent } from "@/lib/knowledge-base";
 import { getAuthContext, requireWritableKnowledgeBase } from "@/lib/kb-access";
 import { getRagClients } from "@/lib/credentials";
-import { ingestKnowledgeFile } from "@/lib/ingest";
-import { prisma } from "@/lib/prisma";
-import { enforceFallbackRateLimit } from "@/lib/rate-limit";
+import { enqueueIngestionJob } from "@/lib/ingest";
+import { scheduleIngestion } from "@/lib/ingestion-scheduler";
 import { downloadRemoteFile } from "@/lib/remote-file";
 import { getSessionState } from "@/lib/session";
 
@@ -26,17 +25,9 @@ export async function POST(
     const { id } = await context.params;
     const authContext = await getAuthContext();
     const knowledgeBase = await requireWritableKnowledgeBase(id, authContext);
-    const { openai, qdrant, credentials } = getRagClients(request, {
+    const { openai, qdrant, credentials } = await getRagClients(request, {
       knowledgeBase,
     });
-
-    if (credentials.keyMode === "fallback") {
-      await enforceFallbackRateLimit({
-        prisma,
-        sessionId: sessionState.sessionId,
-        eventType: UsageEventType.FILE_ADD,
-      });
-    }
 
     const payload = schema.parse(await request.json());
 
@@ -60,17 +51,20 @@ export async function POST(
 
     const buffer = Buffer.from(await file.arrayBuffer());
 
-    const knowledgeFile = await ingestKnowledgeFile({
-      openaiClient: openai,
-      qdrantClient: qdrant,
+    const { knowledgeFile, jobId } = await enqueueIngestionJob({
       knowledgeBaseId: knowledgeBase.id,
-      collectionName: knowledgeBase.qdrantCollectionName,
-      embeddingModel: knowledgeBase.embeddingModel,
       filename: file.name,
       mimeType: file.type,
       buffer,
       importSource: ImportSource.DRIVE,
       sourceUrl: payload.url,
+    });
+    scheduleIngestion({
+      jobId,
+      openaiClient: openai,
+      qdrantClient: qdrant,
+      collectionName: knowledgeBase.qdrantCollectionName,
+      embeddingModel: knowledgeBase.embeddingModel,
     });
 
     await recordUsageEvent({
@@ -83,6 +77,7 @@ export async function POST(
     return jsonWithSession(sessionState, {
       knowledgeFile,
       duplicate: false,
+      queued: true,
     });
   } catch (error) {
     return errorResponse(sessionState, error);

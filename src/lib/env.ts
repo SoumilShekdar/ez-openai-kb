@@ -5,6 +5,8 @@ export const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
 export const DEFAULT_EMBEDDING_DIMENSIONS = 1536;
 export const DEFAULT_QDRANT_SCORE_THRESHOLD = 0.2;
 export const DEFAULT_RETRIEVAL_LIMIT = 8;
+export const MAX_REMOTE_FILE_BYTES = 50 * 1024 * 1024;
+export const REMOTE_FETCH_TIMEOUT_MS = 20_000;
 
 export const DEFAULT_QDRANT_URL =
   "https://728c3995-d04c-4506-97be-7f5c6698f34c.eu-central-1-0.aws.cloud.qdrant.io";
@@ -70,4 +72,11 @@ export function getFallbackQdrantUrl() {
 
 export function getFallbackQdrantApiKey() {
   return readEnv("QDRANT_API_KEY") || null;
+}
+
+export function getAllowedQdrantHosts() {
+  return (readEnv("QDRANT_ALLOWED_HOSTS") || "")
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean);
 }

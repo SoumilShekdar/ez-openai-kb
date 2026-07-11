@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { ApiError } from "@/lib/api";
+import { MAX_REMOTE_FILE_BYTES, REMOTE_FETCH_TIMEOUT_MS } from "@/lib/env";
 import {
   getExtension,
   pickPreferredMimeType,
@@ -26,17 +27,18 @@ function filenameFromDisposition(contentDisposition: string | null) {
 }
 
 function isBlockedIpv4(a: number, b: number) {
-  if (a === 10) return true;
-  if (a === 127) return true;
-  if (a === 0) return true;
+  if (a === 0 || a === 10 || a === 127 || a >= 224) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
   if (a === 169 && b === 254) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
+  if (a === 192 && b === 0) return true;
+  if (a === 198 && (b === 18 || b === 19)) return true;
   return false;
 }
 
 function isBlockedIp(ip: string) {
-  if (ip === "::1" || ip === "127.0.0.1" || ip === "0.0.0.0") {
+  if (ip === "::" || ip === "::1" || ip === "127.0.0.1" || ip === "0.0.0.0") {
     return true;
   }
 
@@ -51,6 +53,7 @@ function isBlockedIp(ip: string) {
     if (normalized === "::1") return true;
     if (normalized.startsWith("fe80:")) return true;
     if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
+    if (normalized.startsWith("ff")) return true;
     if (normalized.startsWith("::ffff:")) {
       const mapped = normalized.slice(7);
       if (isIP(mapped) === 4) {
@@ -62,7 +65,7 @@ function isBlockedIp(ip: string) {
   return false;
 }
 
-async function assertSafeRemoteUrl(url: string) {
+export async function assertSafeRemoteUrl(url: string) {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -95,18 +98,20 @@ async function assertSafeRemoteUrl(url: string) {
   }
 }
 
-async function fetchWithSafeRedirects(url: string) {
+export async function fetchWithSafeRedirects(url: string, method: "GET" | "HEAD" = "GET") {
   let currentUrl = url;
 
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
     await assertSafeRemoteUrl(currentUrl);
 
     const response = await fetch(currentUrl, {
+      method,
       redirect: "manual",
       headers: {
         "user-agent": "Mozilla/5.0 KnowledgeBaseLab/1.0",
       },
       cache: "no-store",
+      signal: AbortSignal.timeout(REMOTE_FETCH_TIMEOUT_MS),
     });
 
     if (response.status >= 300 && response.status < 400) {
@@ -123,6 +128,43 @@ async function fetchWithSafeRedirects(url: string) {
   }
 
   throw new ApiError(400, "Too many redirects while downloading this URL.");
+}
+
+async function readResponseBodyWithLimit(response: Response) {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_REMOTE_FILE_BYTES) {
+    throw new ApiError(
+      400,
+      `Remote file exceeds the ${MAX_REMOTE_FILE_BYTES / (1024 * 1024)} MB limit.`,
+    );
+  }
+
+  if (!response.body) {
+    return Buffer.alloc(0);
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_REMOTE_FILE_BYTES) {
+        await reader.cancel();
+        throw new ApiError(
+          400,
+          `Remote file exceeds the ${MAX_REMOTE_FILE_BYTES / (1024 * 1024)} MB limit.`,
+        );
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return Buffer.concat(chunks);
 }
 
 export async function downloadRemoteFile(url: string, fallbackFilename?: string) {
@@ -145,7 +187,7 @@ export async function downloadRemoteFile(url: string, fallbackFilename?: string)
 
   validateSupportedFile(usableName, contentType);
 
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const buffer = await readResponseBodyWithLimit(response);
   if (!buffer.length) {
     throw new ApiError(400, "The downloaded file was empty.");
   }

@@ -19,6 +19,7 @@ model KnowledgeBase {
   updatedAt            DateTime        @updatedAt
   files                KnowledgeFile[]
   usageEvents          UsageEvent[]
+  ingestionJobs        IngestionJob[]
 
   @@index([visibility])
   @@index([ownerId])
@@ -36,10 +37,29 @@ model KnowledgeFile {
   mimeType        String?
   chunkCount      Int           @default(0)
   attributesJson  String?
+  ingestionJob    IngestionJob?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
   @@index([knowledgeBaseId, createdAt])
+}
+
+model IngestionJob {
+  id              String        @id @default(cuid())
+  knowledgeBase   KnowledgeBase @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
+  knowledgeBaseId String
+  knowledgeFile   KnowledgeFile @relation(fields: [knowledgeFileId], references: [id], onDelete: Cascade)
+  knowledgeFileId String        @unique
+  importSource    ImportSource
+  sourceUrl       String?
+  payload         Bytes
+  status          FileStatus    @default(PENDING)
+  attempts        Int           @default(0)
+  lastError       String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([knowledgeBaseId, status, createdAt])
 }
 
 model UsageEvent {

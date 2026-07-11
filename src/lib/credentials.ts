@@ -3,11 +3,13 @@ import type { NextRequest } from "next/server";
 import OpenAI from "openai";
 import { ApiError } from "@/lib/api";
 import {
+  getAllowedQdrantHosts,
   getFallbackOpenAIKey,
   getFallbackQdrantApiKey,
   getFallbackQdrantUrl,
 } from "@/lib/env";
 import { createQdrantClient } from "@/lib/qdrant";
+import { assertSafeRemoteUrl } from "@/lib/remote-file";
 
 export type CredentialMode = "user" | "fallback";
 
@@ -20,6 +22,27 @@ export type RagCredentials = {
 
 function readHeader(request: NextRequest, name: string) {
   return request.headers.get(name)?.trim() || null;
+}
+
+async function validateUserQdrantUrl(url: string) {
+  await assertSafeRemoteUrl(url);
+  const hostname = new URL(url).hostname.toLowerCase();
+  const allowedHosts = getAllowedQdrantHosts();
+  if (!allowedHosts.length) {
+    throw new ApiError(
+      400,
+      "User-supplied Qdrant URLs are disabled. Configure QDRANT_ALLOWED_HOSTS for approved public Qdrant hosts.",
+    );
+  }
+
+  const allowed = allowedHosts.some(
+    (host) =>
+      hostname === host ||
+      (host.startsWith("*.") && hostname.endsWith(host.slice(1))),
+  );
+  if (!allowed) {
+    throw new ApiError(400, "This Qdrant host is not approved for this deployment.");
+  }
 }
 
 export function getOpenAIKeyFromRequest(request: NextRequest) {
@@ -62,15 +85,19 @@ export function getQdrantCredentialsFromRequest(request: NextRequest) {
   return null;
 }
 
-export function resolveRagCredentials(
+export async function resolveRagCredentials(
   request: NextRequest,
   options?: {
     requireUserCredentials?: boolean;
     knowledgeBase?: Pick<KnowledgeBase, "visibility">;
   },
-): RagCredentials {
+): Promise<RagCredentials> {
   const openai = getOpenAIKeyFromRequest(request);
   const qdrant = getQdrantCredentialsFromRequest(request);
+
+  if (qdrant?.keyMode === "user") {
+    await validateUserQdrantUrl(qdrant.url);
+  }
 
   const isPrivate = options?.knowledgeBase?.visibility === "PRIVATE";
   const requireUser = options?.requireUserCredentials ?? isPrivate;
@@ -87,6 +114,7 @@ export function resolveRagCredentials(
       );
     }
 
+    await validateUserQdrantUrl(userQdrantUrl);
     return {
       openaiApiKey: userOpenAI,
       qdrantUrl: userQdrantUrl,
@@ -117,14 +145,14 @@ export function resolveRagCredentials(
   };
 }
 
-export function getRagClients(
+export async function getRagClients(
   request: NextRequest,
   options?: {
     requireUserCredentials?: boolean;
     knowledgeBase?: Pick<KnowledgeBase, "visibility">;
   },
 ) {
-  const credentials = resolveRagCredentials(request, options);
+  const credentials = await resolveRagCredentials(request, options);
 
   return {
     credentials,
@@ -145,12 +173,16 @@ export function getOpenAIKeyFromCompatRequest(request: NextRequest) {
   return getOpenAIKeyFromRequest(request);
 }
 
-export function resolveCompatRagCredentials(
+export async function resolveCompatRagCredentials(
   request: NextRequest,
   knowledgeBase: Pick<KnowledgeBase, "visibility">,
-): RagCredentials {
+): Promise<RagCredentials> {
   const openai = getOpenAIKeyFromCompatRequest(request);
   const qdrant = getQdrantCredentialsFromRequest(request);
+
+  if (qdrant?.keyMode === "user") {
+    await validateUserQdrantUrl(qdrant.url);
+  }
   const isPrivate = knowledgeBase.visibility === "PRIVATE";
 
   if (isPrivate) {
@@ -165,6 +197,7 @@ export function resolveCompatRagCredentials(
       );
     }
 
+    await validateUserQdrantUrl(userQdrantUrl);
     return {
       openaiApiKey: userOpenAI,
       qdrantUrl: userQdrantUrl,
