@@ -1,11 +1,11 @@
 "use client";
 
-import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
+import { SignedIn, SignedOut, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 
 export function AuthControls() {
   return (
     <div className="flex items-center gap-1">
-      <Show when="signed-out">
+      <SignedOut>
         <SignInButton mode="modal">
           <button
             type="button"
@@ -22,8 +22,8 @@ export function AuthControls() {
             Sign up
           </button>
         </SignUpButton>
-      </Show>
-      <Show when="signed-in">
+      </SignedOut>
+      <SignedIn>
         <UserButton
           appearance={{
             elements: {
@@ -31,7 +31,7 @@ export function AuthControls() {
             },
           }}
         />
-      </Show>
+      </SignedIn>
     </div>
   );
 }
