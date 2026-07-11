@@ -6,6 +6,7 @@ import { getAuthContext, requireReadableKnowledgeBase } from "@/lib/kb-access";
 import { recordUsageEvent } from "@/lib/knowledge-base";
 import { getRagClients } from "@/lib/credentials";
 import { searchKnowledgeBase } from "@/lib/rag";
+import { enforceFallbackRateLimit } from "@/lib/rate-limit";
 import { getSessionState } from "@/lib/session";
 
 const schema = z.object({
@@ -24,6 +25,12 @@ export async function POST(
     const knowledgeBase = await requireReadableKnowledgeBase(id, authContext);
     const { openai, qdrant, credentials } = await getRagClients(request, {
       knowledgeBase,
+    });
+    await enforceFallbackRateLimit({
+      request,
+      sessionId: sessionState.sessionId,
+      eventType: UsageEventType.SEARCH,
+      keyMode: credentials.keyMode,
     });
     const payload = schema.parse(await request.json());
 

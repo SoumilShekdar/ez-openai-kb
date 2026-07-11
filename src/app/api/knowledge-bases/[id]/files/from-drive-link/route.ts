@@ -8,6 +8,7 @@ import { getAuthContext, requireWritableKnowledgeBase } from "@/lib/kb-access";
 import { getRagClients } from "@/lib/credentials";
 import { enqueueIngestionJob } from "@/lib/ingest";
 import { scheduleIngestion } from "@/lib/ingestion-scheduler";
+import { enforceFallbackRateLimit } from "@/lib/rate-limit";
 import { downloadRemoteFile } from "@/lib/remote-file";
 import { getSessionState } from "@/lib/session";
 
@@ -27,6 +28,12 @@ export async function POST(
     const knowledgeBase = await requireWritableKnowledgeBase(id, authContext);
     const { openai, qdrant, credentials } = await getRagClients(request, {
       knowledgeBase,
+    });
+    await enforceFallbackRateLimit({
+      request,
+      sessionId: sessionState.sessionId,
+      eventType: UsageEventType.FILE_ADD,
+      keyMode: credentials.keyMode,
     });
 
     const payload = schema.parse(await request.json());

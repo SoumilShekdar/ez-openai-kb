@@ -77,8 +77,9 @@ When upgrading an existing database, knowledge bases matching the four seeded pu
 
 - Users can paste their own OpenAI key in the app UI. It is stored only in `sessionStorage`.
 - If no user key is present, the app falls back to `OPENAI_API_KEY` from the server environment.
-- The app does not add its own fallback-key or web-discovery rate limits. Provider
-  limits and quotas still apply.
+- Shared server OpenAI/Qdrant keys have soft abuse limits (high enough that normal human
+  use should not hit them). Bring-your-own keys are not limited by the app. Provider
+  quotas still apply either way.
 
 ## Ingestion jobs
 

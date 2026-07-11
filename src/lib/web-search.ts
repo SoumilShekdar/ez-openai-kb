@@ -1,4 +1,4 @@
-import * as cheerio from "cheerio";
+import type OpenAI from "openai";
 import { ApiError } from "@/lib/api";
 import {
   extensionFromMimeType,
@@ -22,6 +22,8 @@ const BROWSER_HEADERS = {
   "accept-language": "en-US,en;q=0.9",
 };
 
+const WEB_SEARCH_MODEL = "gpt-4.1-mini";
+
 export type WebCandidate = {
   title: string;
   url: string;
@@ -33,85 +35,31 @@ export type WebCandidate = {
 type SearchLink = {
   title: string;
   href: string;
-  snippet?: string;
 };
 
-function unwrapDuckDuckGoHref(href: string) {
-  if (!href.startsWith("//duckduckgo.com/l/?") && !href.startsWith("https://duckduckgo.com/l/?")) {
+function cleanSearchUrl(href: string) {
+  try {
+    const url = new URL(href);
+    url.searchParams.delete("utm_source");
+    url.searchParams.delete("utm_medium");
+    url.searchParams.delete("utm_campaign");
+    return url.toString();
+  } catch {
     return href;
   }
-
-  const normalized = href.startsWith("//") ? `https:${href}` : href;
-  const url = new URL(normalized);
-  return url.searchParams.get("uddg") ?? href;
 }
 
-function getQueryTerms(query: string) {
-  return query
-    .toLowerCase()
-    .split(/[^a-z0-9]+/i)
-    .map((term) => term.trim())
-    .filter((term) => term.length >= 2);
-}
-
-function scoreSearchLink(link: SearchLink, terms: string[]) {
-  if (terms.length === 0) {
-    return 1;
-  }
-
-  const haystack = `${link.title} ${link.href} ${link.snippet ?? ""}`.toLowerCase();
-  return terms.reduce((score, term) => (haystack.includes(term) ? score + 1 : score), 0);
-}
-
-function minRelevantScore(terms: string[]) {
-  if (terms.length <= 1) {
-    return 1;
-  }
-
-  // Multi-word queries should not collapse to the first term only.
-  return Math.min(terms.length, Math.max(2, Math.ceil(terms.length * 0.75)));
-}
-
-function buildPhraseQuery(query: string) {
-  const trimmed = query.trim();
-  if (!trimmed || /^".*"$/.test(trimmed) || !/\s/.test(trimmed)) {
-    return trimmed;
-  }
-
-  return `"${trimmed.replaceAll('"', "")}"`;
-}
-
-function buildScopedQuery(query: string, domains: string[]) {
+function hostMatchesDomains(href: string, domains: string[]) {
   if (domains.length === 0) {
-    return query;
+    return true;
   }
 
-  return `${query} ${domains.map((domain) => `site:${domain}`).join(" OR ")}`;
-}
-
-function dedupeLinks(links: SearchLink[]) {
-  const seen = new Set<string>();
-  const unique: SearchLink[] = [];
-
-  for (const link of links) {
-    if (!link.href.startsWith("http") || seen.has(link.href)) {
-      continue;
-    }
-    seen.add(link.href);
-    unique.push(link);
+  try {
+    const host = new URL(href).hostname.replace(/^www\./, "").toLowerCase();
+    return domains.some((domain) => host === domain || host.endsWith(`.${domain}`));
+  } catch {
+    return false;
   }
-
-  return unique;
-}
-
-function rankLinks(links: SearchLink[], terms: string[]) {
-  const minScore = minRelevantScore(terms);
-
-  return dedupeLinks(links)
-    .map((link) => ({ link, score: scoreSearchLink(link, terms) }))
-    .filter((item) => item.score >= minScore)
-    .sort((a, b) => b.score - a.score || a.link.title.localeCompare(b.link.title))
-    .map((item) => item.link);
 }
 
 async function inspectCandidate(url: string) {
@@ -131,123 +79,125 @@ async function inspectCandidate(url: string) {
   }
 }
 
-async function searchBingRss(query: string): Promise<SearchLink[]> {
-  const searchUrl = new URL("https://www.bing.com/search");
-  searchUrl.searchParams.set("q", query);
-  searchUrl.searchParams.set("format", "rss");
+function buildSearchPrompt(query: string, domains: string[]) {
+  const scope =
+    domains.length > 0
+      ? `Only use sources from these domains: ${domains.join(", ")}.`
+      : "Prefer authoritative primary sources.";
 
-  const response = await fetch(searchUrl, {
-    headers: {
-      ...BROWSER_HEADERS,
-      accept: "application/rss+xml, application/xml, text/xml, */*",
-    },
-    cache: "no-store",
-  });
-
-  if (!response.ok) {
-    return [];
-  }
-
-  const xml = await response.text();
-  if (!xml.includes("<item>")) {
-    return [];
-  }
-
-  const $ = cheerio.load(xml, { xml: true });
-  return $("item")
-    .toArray()
-    .map((node) => ({
-      title: $(node).find("title").first().text().trim(),
-      href: $(node).find("link").first().text().trim(),
-      snippet: $(node).find("description").first().text().trim(),
-    }))
-    .filter((item) => item.href.startsWith("http"));
+  return [
+    `Find publicly accessible downloadable documents about: ${query}`,
+    scope,
+    "Prefer PDF, HTML articles, plain text, Markdown, CSV, or JSON files.",
+    "Return a concise list of the best matching file or article URLs with titles.",
+    "Do not invent URLs. Use web search.",
+  ].join("\n");
 }
 
-async function searchDuckDuckGoHtml(query: string): Promise<SearchLink[]> {
-  const searchUrl = new URL("https://html.duckduckgo.com/html/");
-  searchUrl.searchParams.set("q", query);
+function collectLinksFromResponse(response: {
+  output?: unknown[];
+  output_text?: string;
+}): SearchLink[] {
+  const links = new Map<string, SearchLink>();
 
-  const response = await fetch(searchUrl, {
-    headers: BROWSER_HEADERS,
-    cache: "no-store",
-  });
-
-  if (!response.ok || response.status === 202) {
-    return [];
-  }
-
-  const html = await response.text();
-  if (!html.includes("result__a")) {
-    return [];
-  }
-
-  const $ = cheerio.load(html);
-  return $(".result__a")
-    .toArray()
-    .map((node) => {
-      const result = $(node).closest(".result");
-      return {
-        title: $(node).text().trim(),
-        href: unwrapDuckDuckGoHref($(node).attr("href")?.trim() ?? ""),
-        snippet: result.find(".result__snippet").first().text().trim(),
-      };
-    })
-    .filter((item) => item.href.startsWith("http"));
-}
-
-async function collectSearchLinks(query: string, domains: string[]) {
-  const terms = getQueryTerms(query);
-  const phraseQuery = buildScopedQuery(buildPhraseQuery(query), domains);
-  const plainQuery = buildScopedQuery(query, domains);
-  const queries = phraseQuery === plainQuery ? [plainQuery] : [phraseQuery, plainQuery];
-
-  const collected: SearchLink[] = [];
-  let providerReturnedLinks = false;
-
-  for (const scopedQuery of queries) {
-    const bingLinks = await searchBingRss(scopedQuery);
-    if (bingLinks.length > 0) {
-      providerReturnedLinks = true;
-      collected.push(...bingLinks);
+  const addLink = (href: string, title?: string) => {
+    const cleaned = cleanSearchUrl(href.trim());
+    if (!cleaned.startsWith("http") || links.has(cleaned)) {
+      return;
     }
-
-    let ranked = rankLinks(collected, terms);
-    if (ranked.length > 0) {
-      return { links: ranked, providerReturnedLinks };
-    }
-
-    const duckLinks = await searchDuckDuckGoHtml(scopedQuery);
-    if (duckLinks.length > 0) {
-      providerReturnedLinks = true;
-      collected.push(...duckLinks);
-    }
-
-    ranked = rankLinks(collected, terms);
-    if (ranked.length > 0) {
-      return { links: ranked, providerReturnedLinks };
-    }
-  }
-
-  return {
-    links: rankLinks(collected, terms),
-    providerReturnedLinks,
+    links.set(cleaned, {
+      href: cleaned,
+      title: title?.trim() || cleaned,
+    });
   };
+
+  for (const item of response.output ?? []) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const record = item as Record<string, unknown>;
+
+    if (record.type === "web_search_call") {
+      const action = record.action as Record<string, unknown> | undefined;
+      const sources = action?.sources;
+      if (Array.isArray(sources)) {
+        for (const source of sources) {
+          if (!source || typeof source !== "object") {
+            continue;
+          }
+          const url = (source as { url?: string }).url;
+          if (url) {
+            addLink(url);
+          }
+        }
+      }
+    }
+
+    if (record.type === "message" && Array.isArray(record.content)) {
+      for (const part of record.content) {
+        if (!part || typeof part !== "object") {
+          continue;
+        }
+        const content = part as {
+          annotations?: Array<{ type?: string; url?: string; title?: string }>;
+        };
+        for (const annotation of content.annotations ?? []) {
+          if (annotation.type === "url_citation" && annotation.url) {
+            addLink(annotation.url, annotation.title);
+          }
+        }
+      }
+    }
+  }
+
+  const text = response.output_text ?? "";
+  for (const match of text.matchAll(/https?:\/\/[^\s)\]>"']+/g)) {
+    addLink(match[0].replace(/[.,;:]+$/, ""));
+  }
+
+  return [...links.values()];
 }
 
-export async function searchWebForFiles(query: string, preset = "all") {
+async function searchWithOpenAI(client: OpenAI, query: string, domains: string[]) {
+  const tool: {
+    type: "web_search";
+    search_context_size: "medium";
+    filters?: { allowed_domains: string[] };
+  } = {
+    type: "web_search",
+    search_context_size: "medium",
+  };
+
+  if (domains.length > 0) {
+    tool.filters = { allowed_domains: domains };
+  }
+
+  try {
+    const response = await client.responses.create({
+      model: WEB_SEARCH_MODEL,
+      tools: [tool],
+      tool_choice: "required",
+      include: ["web_search_call.action.sources"],
+      input: buildSearchPrompt(query, domains),
+    });
+
+    return collectLinksFromResponse(response);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "OpenAI web search failed.";
+    throw new ApiError(502, `OpenAI web search failed: ${message}`);
+  }
+}
+
+export async function searchWebForFiles(
+  query: string,
+  preset = "all",
+  openaiClient: OpenAI,
+) {
   const domains = DOMAIN_PRESETS[preset] ?? [];
-  const terms = getQueryTerms(query);
-  const { links, providerReturnedLinks } = await collectSearchLinks(query, domains);
+  const links = await searchWithOpenAI(openaiClient, query, domains);
 
   if (links.length === 0) {
-    if (!providerReturnedLinks) {
-      throw new ApiError(
-        503,
-        "Web search is temporarily unavailable. Try again in a moment.",
-      );
-    }
-
     return [];
   }
 
@@ -255,6 +205,10 @@ export async function searchWebForFiles(query: string, preset = "all") {
   const seen = new Set<string>();
 
   for (const item of links.slice(0, 12)) {
+    if (!hostMatchesDomains(item.href, domains)) {
+      continue;
+    }
+
     let parsed: URL;
     try {
       parsed = new URL(item.href);
@@ -272,20 +226,12 @@ export async function searchWebForFiles(query: string, preset = "all") {
       continue;
     }
 
-    const supported = isSupportedFile(finalUrl, inspected.contentType);
-
-    if (!supported || seen.has(finalUrl)) {
+    if (!hostMatchesDomains(finalUrl, domains)) {
       continue;
     }
 
-    // Re-check relevance against the final URL after redirects.
-    if (
-      terms.length > 1 &&
-      scoreSearchLink(
-        { title: item.title, href: finalUrl, snippet: item.snippet },
-        terms,
-      ) < minRelevantScore(terms)
-    ) {
+    const supported = isSupportedFile(finalUrl, inspected.contentType);
+    if (!supported || seen.has(finalUrl)) {
       continue;
     }
 

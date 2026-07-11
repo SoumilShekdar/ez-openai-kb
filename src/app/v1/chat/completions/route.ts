@@ -13,6 +13,7 @@ import {
   resolveKnowledgeBaseId,
 } from "@/lib/openai-compat";
 import { DEFAULT_RAG_MODEL, runRagChat, toChatCompletionResponse } from "@/lib/rag";
+import { enforceFallbackRateLimit } from "@/lib/rate-limit";
 import { applySessionCookie, getSessionState } from "@/lib/session";
 
 const messageSchema = z.object({
@@ -51,6 +52,12 @@ export async function POST(request: NextRequest) {
     }
 
     const credentials = await resolveCompatRagCredentials(request, knowledgeBase);
+    await enforceFallbackRateLimit({
+      request,
+      sessionId: sessionState.sessionId,
+      eventType: UsageEventType.CHAT,
+      keyMode: credentials.keyMode,
+    });
 
     const openaiClient = new OpenAI({ apiKey: credentials.openaiApiKey });
     const qdrantClient = createQdrantClient(
